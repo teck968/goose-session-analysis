@@ -1,9 +1,10 @@
 import unittest
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import io
 from contextlib import redirect_stdout
+
 
 # Add parent directory to path so we can import token_analysis
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -20,11 +21,12 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
         if not os.path.exists(self.test_file):
             self.skipTest(f"Test file {self.test_file} not found")
     
-    @patch('token_analysis.tiktoken')
-    def test_analyze_logs_with_real_file(self, mock_tiktoken):
+    @patch('tiktoken.get_encoding')
+    def test_analyze_logs_with_real_file(self, mock_get_encoding):
         # Setup mock tokenizer to return predictable values
-        mock_encoding = mock_tiktoken.get_encoding.return_value
+        mock_encoding = MagicMock()
         mock_encoding.encode.return_value = [1, 2, 3]  # Always return 3 tokens
+        mock_get_encoding.return_value = mock_encoding
         
         # Read and analyze the test file
         from token_analysis import read_jsonl_file
@@ -54,10 +56,13 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
         self.assertGreater(first_user_msg['input_tokens'], 3000)  # SYSTEM_PROMPT_OVERHEAD
     
     @patch('argparse.ArgumentParser.parse_args')
-    @patch('token_analysis.tiktoken')
-    def test_main_function(self, mock_tiktoken, mock_parse_args):
+    @patch('tiktoken.get_encoding')
+    def test_main_function(self, mock_get_encoding, mock_parse_args):
         # Setup mock tokenizer
-        mock_encoding = mock_tiktoken.get_encoding.return_value
+        mock_encoding = MagicMock()
+        mock_encoding.encode.return_value = [1, 2, 3]  # Always return 3 tokens
+        mock_get_encoding.return_value = mock_encoding        # Setup mock tokenizer
+        mock_encoding = mock_get_encoding.return_value
         mock_encoding.encode.return_value = [1, 2, 3]  # Always return 3 tokens
         
         # Setup mock args

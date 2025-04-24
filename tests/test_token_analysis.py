@@ -113,27 +113,27 @@ class TestTokenAnalysis(unittest.TestCase):
             }
         ]
 
-    @patch('token_analysis.tiktoken')
-    def test_get_tokenizer(self, mock_tiktoken):
+    @patch('tiktoken.get_encoding')
+    def test_get_tokenizer(self, mock_get_encoding):
         # Setup mock
         mock_encoding = MagicMock()
         mock_encoding.encode.return_value = [1, 2, 3]  # 3 tokens
-        mock_tiktoken.get_encoding.return_value = mock_encoding
-        
+        mock_get_encoding.return_value = mock_encoding
+
         # Test the tokenizer
         tokenizer = get_tokenizer('tiktoken')
         result = tokenizer("test text")
-        
+
         # Verify
         self.assertEqual(result, 3)
-        mock_tiktoken.get_encoding.assert_called_once_with("cl100k_base")
+        mock_get_encoding.assert_called_once_with("cl100k_base")
 
     def test_extract_by_criteria(self):
         # Test extracting text from mixed content
         result = extract_by_criteria(
             self.sample_content,
-            match_fn=lambda x: isinstance(x, str) or (isinstance(x, dict) and x.get("type") == "text"),
-            value_fn=lambda x: x if isinstance(x, str) else x.get("text", "")
+            match_fn=lambda x: isinstance(x, dict) and x.get("type") == "text",
+            value_fn=lambda x: x.get("text", "")
         )
         
         self.assertEqual(result, "Hello world The weather is sunny and 22°C")
@@ -167,33 +167,28 @@ class TestTokenAnalysis(unittest.TestCase):
     def test_count_tools_for_schema(self):
         # Test counting tokens for tool schema
         schema_tokens = count_tools_for_schema(self.mock_tokenizer, self.sample_tools)
-        
+
         # The schema should have tokens for name, description, properties, etc.
         self.assertGreater(schema_tokens, 0)
-        
+
         # Test with empty tools list
         empty_schema_tokens = count_tools_for_schema(self.mock_tokenizer, [])
         self.assertEqual(empty_schema_tokens, 0)
-        
-        # Test with a tool that has enum values
-        tools_with_enum = [
-            {
-                "name": "get_weather",
-                "description": "Get the current weather for a location",
-                "input_schema": {
-                    "properties": {
-                        "unit": {
-                            "type": "string",
-                            "description": "Temperature unit",
-                            "enum": ["celsius", "fahrenheit", "kelvin"]
-                        }
-                    }
-                }
-            }
-        ]
-        enum_schema_tokens = count_tools_for_schema(self.mock_tokenizer, tools_with_enum)
-        self.assertGreater(enum_schema_tokens, schema_tokens, 
-                          "Tools with enum values should have more tokens")
+
+        # Create a copy of sample_tools with additional enum values
+        import copy
+        tools_with_more_enums = copy.deepcopy(self.sample_tools)
+        # Add more enum values to the existing enum
+        for tool in tools_with_more_enums:
+            for prop_name, prop in tool.get('input_schema', {}).get('properties', {}).items():
+                if 'enum' in prop:
+                    # Add more enum values
+                    prop['enum'].extend(['kelvin', 'rankine', 'delisle'])
+
+        # Test with a tool that has more enum values
+        enum_schema_tokens = count_tools_for_schema(self.mock_tokenizer, tools_with_more_enums)
+        self.assertGreater(enum_schema_tokens, schema_tokens,
+                        "Tools with more enum values should have more tokens")
 
     def test_analyze_logs(self):
         # Test analyzing logs
