@@ -12,7 +12,8 @@ This project provides tools for analyzing token usage in Goose AI agent session 
 
 - **Tokenizer:**  
   Supports the `tiktoken` tokenizer for token counting (accurate for OpenAI models).
-  Note: Using the `tiktoken` tokenizer may not be 100% accurate for other providers.
+
+  *Note: Using the `tiktoken` tokenizer may not be 100% accurate for other providers.*
   
 
 - **Test Suite:**  
