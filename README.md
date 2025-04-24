@@ -10,8 +10,10 @@ This project provides tools for analyzing token usage in Goose AI agent session 
 - **Detailed Reporting:**  
   Generates formatted tables summarizing each interaction, highlights outliers, and provides aggregate metrics.
 
-- **Customizable Tokenizer:**  
-  Supports the `tiktoken` tokenizer for accurate token counting (compatible with OpenAI models).
+- **Tokenizer:**  
+  Supports the `tiktoken` tokenizer for token counting (accurate for OpenAI models).
+  Note: Using the `tiktoken` tokenizer may not be 100% accurate for other providers.
+  
 
 - **Test Suite:**  
   Includes a test runner for validating token analysis logic.
@@ -27,6 +29,13 @@ Install dependencies with:
 ```sh
 pip install -r requirements.txt
 ```
+
+## Goose Session Log Locations
+
+Goose session logs are stored in the following local directories:
+
+- **Unix-like systems (macOS, Linux):** `~/.local/share/goose/sessions/`
+- **Windows:** `%APPDATA%\Block\goose\data\sessions\`
 
 ## Usage
 
