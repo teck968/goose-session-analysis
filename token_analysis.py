@@ -10,6 +10,21 @@ def get_tokenizer(tokenizer_name):
             return lambda text: len(enc.encode(text))
         except ImportError:
             raise ImportError("tiktoken is not installed. Please install it with 'pip install tiktoken'")
+    elif tokenizer_name == "gpt4o":
+        try:
+            import tiktoken
+            enc = tiktoken.get_encoding("cl100k_base")  # GPT-4o uses cl100k_base
+            return lambda text: len(enc.encode(text))
+        except ImportError:
+            raise ImportError("tiktoken is not installed. Please install it with 'pip install tiktoken'")
+    elif tokenizer_name == "claude":
+        try:
+            # Claude's tokenizer is approximated with cl100k_base
+            import tiktoken
+            enc = tiktoken.get_encoding("cl100k_base")
+            return lambda text: len(enc.encode(text))
+        except ImportError:
+            raise ImportError("tiktoken is not installed. Please install it with 'pip install tiktoken'")
     else:
         raise ValueError(f"Unknown tokenizer: {tokenizer_name}")
 
@@ -114,6 +129,57 @@ def count_tool_tokens(tokenizer, tool_data, is_request=True):
     
     return tokens
 
+def count_tools_for_schema(tokenizer, tools):
+    """
+    Count tokens for tools schema following Goose's count_tokens_for_tools logic
+    
+    Parameters:
+        tokenizer: Function to count tokens in a string
+        tools: List of tool dictionaries
+        
+    Returns:
+        Total token count for the tools schema
+    """
+    # Token counts for different function components from Goose
+    func_init = 7  # Tokens for function initialization
+    prop_init = 3  # Tokens for properties initialization
+    prop_key = 3   # Tokens for each property key
+    enum_init = -3  # Tokens adjustment for enum list start
+    enum_item = 3  # Tokens for each enum item
+    func_end = 12  # Tokens for function ending
+    
+    func_token_count = 0
+    if not tools:
+        return 0
+        
+    for tool in tools:
+        func_token_count += func_init  # Add tokens for start of each function
+        name = tool.get('name', '')
+        description = tool.get('description', '').rstrip('.')
+        line = f"{name}:{description}"
+        func_token_count += tokenizer(line)  # Add tokens for name and description
+        
+        properties = tool.get('input_schema', {}).get('properties', {})
+        if properties:
+            func_token_count += prop_init  # Add tokens for start of properties
+            for key, value in properties.items():
+                func_token_count += prop_key  # Add tokens for each property
+                p_name = key
+                p_type = value.get('type', '')
+                p_desc = value.get('description', '').rstrip('.')
+                line = f"{p_name}:{p_type}:{p_desc}"
+                func_token_count += tokenizer(line)
+                
+                enum_values = value.get('enum', [])
+                if enum_values:
+                    func_token_count += enum_init  # Add tokens if property has enum list
+                    for item in enum_values:
+                        func_token_count += enum_item
+                        func_token_count += tokenizer(str(item))
+    
+    func_token_count += func_end
+    return func_token_count
+
 def analyze_logs(session_logs, tokenizer_name="tiktoken"):
     tokenizer = get_tokenizer(tokenizer_name)
     summary = session_logs[0]
@@ -124,6 +190,15 @@ def analyze_logs(session_logs, tokenizer_name="tiktoken"):
     ASSISTANT_REPLY_TOKENS = 3  # From token_counter.rs
     SYSTEM_PROMPT_OVERHEAD = 3000  # From context_mgmt/common.rs
     TOOLS_OVERHEAD = 5000  # From context_mgmt/common.rs
+    ESTIMATE_FACTOR = 0.7  # From context_mgmt/common.rs
+
+    # Extract tools from the session logs if available
+    tools = []
+    if 'tools' in summary:
+        tools = summary.get('tools', [])
+
+    # Calculate tools schema token count once
+    tools_schema_tokens = count_tools_for_schema(tokenizer, tools)
 
     analyzed = []
     context_messages = []
@@ -154,10 +229,15 @@ def analyze_logs(session_logs, tokenizer_name="tiktoken"):
             msg_type = "unknown"
             
         # Add message to context
-        msg_text = f"{role} {all_text}"
-        context_messages.append(msg_text)
+        context_messages.append({
+            'role': role,
+            'content': content,
+            'text': all_text,
+            'tool_requests': tool_requests,
+            'tool_responses': tool_responses
+        })
         
-        # Calculate token counts
+        # Calculate token counts following Goose's count_chat_tokens logic
         message_overhead = TOKENS_PER_MESSAGE
         if role == 'assistant':
             message_overhead += ASSISTANT_REPLY_TOKENS
@@ -174,16 +254,21 @@ def analyze_logs(session_logs, tokenizer_name="tiktoken"):
         
         # Determine context, input, and output tokens
         if role == 'user':
-            # Calculate context tokens from previous messages
-            if context_messages[:-1]:
-                context_text = " ".join(context_messages[:-1])
-                context_tokens = tokenizer(context_text)
-                # Add message overhead for each previous message
-                context_tokens += TOKENS_PER_MESSAGE * len(context_messages[:-1])
-                # Add assistant reply tokens for assistant messages
-                for i, msg in enumerate(context_messages[:-1]):
-                    if msg.startswith("assistant"):
+            # Calculate context tokens from previous messages using Goose's approach
+            if len(context_messages) > 1:  # If there are previous messages
+                context_tokens = 0
+                for prev_msg in context_messages[:-1]:  # All messages except current
+                    # Add message overhead
+                    context_tokens += TOKENS_PER_MESSAGE
+                    if prev_msg['role'] == 'assistant':
                         context_tokens += ASSISTANT_REPLY_TOKENS
+                    
+                    # Add text content tokens
+                    context_tokens += tokenizer(prev_msg['text']) if prev_msg['text'] else 0
+                    
+                    # Add tool request/response tokens
+                    context_tokens += count_tool_tokens(tokenizer, prev_msg['tool_requests'], is_request=True)
+                    context_tokens += count_tool_tokens(tokenizer, prev_msg['tool_responses'], is_request=False)
             else:
                 context_tokens = 0
                 
@@ -223,7 +308,8 @@ def analyze_logs(session_logs, tokenizer_name="tiktoken"):
         # Find the first user message
         for item in analyzed:
             if item['role'] == 'user':
-                item['input_tokens'] += SYSTEM_PROMPT_OVERHEAD + TOOLS_OVERHEAD
+                # Use the actual tools schema token count instead of a fixed overhead
+                item['input_tokens'] += SYSTEM_PROMPT_OVERHEAD + tools_schema_tokens
                 break
         
     return analyzed
@@ -247,12 +333,22 @@ def print_analysis(token_logs):
     
     # Calculate metrics with more accurate token counts
     system_overhead = 0
+    tools_overhead = 0
     if not df.empty and 'input_tokens' in df.columns:
         # Find the first user message which should have the system overhead
         first_user = df[df['role'] == 'user'].iloc[0] if not df[df['role'] == 'user'].empty else None
         if first_user is not None:
-            # Extract just the system overhead portion
-            system_overhead = 8000  # SYSTEM_PROMPT_OVERHEAD + TOOLS_OVERHEAD
+            # Extract just the system overhead portion from the first message
+            # The first message has SYSTEM_PROMPT_OVERHEAD + tools_schema_tokens
+            system_overhead = first_user['input_tokens']
+            # Subtract the actual message content tokens to get just the overhead
+            message_content_tokens = df[df['role'] == 'user'].iloc[0]['total_io_tokens'] - system_overhead
+            system_overhead = max(0, system_overhead - message_content_tokens)
+    
+    # Calculate the running total of tokens
+    running_total = system_overhead
+    for _, row in df.iterrows():
+        running_total += row['input_tokens'] + row['output_tokens']
     
     metrics = [
         ("Total interactions", len(df)),
@@ -261,7 +357,7 @@ def print_analysis(token_logs):
         ("Total user input tokens", f"{df[df['type'] == 'user_input']['input_tokens'].sum() - system_overhead:,}"),
         ("Total tool input tokens", f"{df[df['type'] == 'tool_call']['input_tokens'].sum():,}"),
         ("Total agent output tokens", f"{df['output_tokens'].sum():,}"),
-        ("Total tokens (including overhead)", f"{df['input_tokens'].sum() + df['output_tokens'].sum():,}"),
+        ("Total tokens (including overhead)", f"{running_total:,}"),
         ("Average i/o tokens per interaction", f"{(df['input_tokens'] + df['output_tokens']).mean():.1f}")
     ]
 
@@ -287,7 +383,11 @@ def read_jsonl_file(filepath):
 def main():
     parser = argparse.ArgumentParser(description='Analyze session logs for token usage')
     parser.add_argument('input_file', help='Path to the JSON log file')
-    parser.add_argument('--tokenizer', default='tiktoken', help='Tokenizer to use (tiktoken, anthropic-tokenizer)')
+    parser.add_argument('--tokenizer', default='tiktoken', 
+                        choices=['tiktoken', 'gpt4o', 'claude'],
+                        help='Tokenizer to use (tiktoken, gpt4o, claude)')
+    parser.add_argument('--model', default=None, 
+                        help='Model name to determine context limit (e.g., gpt-4o, claude-3-5-sonnet)')
     args = parser.parse_args()
 
     # Read the JSONL file with UTF-8 encoding
