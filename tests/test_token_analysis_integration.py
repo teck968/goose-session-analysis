@@ -15,7 +15,7 @@ from token_analysis import main, analyze_logs
 class TestTokenAnalysisIntegration(unittest.TestCase):
     def setUp(self):
         # Path to the test data file
-        self.test_file = os.path.join('test_data', 'sample_session.jsonl')
+        self.test_file = os.path.join('tests', 'test_data', 'sample_session.jsonl')
         
         # Ensure the test file exists
         if not os.path.exists(self.test_file):
