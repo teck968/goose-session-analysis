@@ -5,13 +5,16 @@ from datetime import datetime
 
 def get_tokenizer(tokenizer_name):
     """Get a tokenizer function based on the model name"""
-    try:
-        import tiktoken
-        # All supported models use cl100k_base
-        enc = tiktoken.get_encoding("cl100k_base")
-        return lambda text: len(enc.encode(text))
-    except ImportError:
-        raise ImportError("tiktoken is not installed. Please install it with 'pip install tiktoken'")
+    if tokenizer_name == "tiktoken":
+        try:
+            import tiktoken
+            # All supported models use cl100k_base
+            enc = tiktoken.get_encoding("cl100k_base")
+            return lambda text: len(enc.encode(text))
+        except ImportError:
+            raise ImportError("tiktoken is not installed. Please install it with 'pip install tiktoken'")
+    else:
+        raise NotImplementedError(f"Tokenizer '{tokenizer_name}' is not implemented.")
 
 def extract_by_criteria(obj, match_fn, value_fn, join_str=" "):
     """Extract values from nested data structures based on matching criteria"""
@@ -121,7 +124,7 @@ def count_tools_for_schema(tokenizer, tools):
     count += FUNC_END
     return count
 
-def analyze_logs(session_logs, tokenizer_name="tiktoken"):
+def analyze_logs(session_logs, tokenizer_name):
     """Analyze token usage in a Goose session log"""
     tokenizer = get_tokenizer(tokenizer_name)
     summary = session_logs[0]
@@ -245,7 +248,7 @@ def print_analysis(token_logs):
     print("\n=== Session Details ===")
     COL_WIDTH = 75
     df['details'] = df['details'].astype(str).str.ljust(COL_WIDTH)
-    columns = ['datetime', 'type', 'context_tokens', 'input_tokens', 'output_tokens', 'flag', 'details']
+    columns = ['datetime', 'created', 'type', 'context_tokens', 'input_tokens', 'output_tokens', 'flag', 'details']
     print(df[columns].to_string(index=False, max_colwidth=COL_WIDTH))
     
     # Calculate system overhead
@@ -279,7 +282,7 @@ def print_analysis(token_logs):
     # Print top token users
     print("\n=== Token Usage Distribution ===")
     print("Top 10 most token-intensive interactions:")
-    top_columns = ['datetime', 'type', 'total_io_tokens', 'flag']
+    top_columns = ['datetime', 'created', 'type', 'total_io_tokens', 'flag']
     print(df.nlargest(10, 'total_io_tokens')[top_columns].to_string(index=False))
 
 def read_jsonl_file(filepath):
@@ -296,7 +299,7 @@ def main():
     parser = argparse.ArgumentParser(description='Analyze Goose session logs for token usage')
     parser.add_argument('input_file', help='Path to the session log JSONL file')
     parser.add_argument('--tokenizer', default='tiktoken', 
-                        choices=['tiktoken', 'gpt4o', 'claude'],
+                        choices=['tiktoken'],
                         help='Tokenizer to use for counting')
     args = parser.parse_args()
 
