@@ -1,0 +1,5 @@
+pandas>=2.0.0
+tiktoken>=0.6.0
+# Optional: only needed if using --tokenizer anthropic-tokenizer
+anthropic-tokenizer>=0.1.0
+
