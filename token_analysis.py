@@ -1,10 +1,6 @@
 import json
 import pandas as pd
 import argparse
-import re
-from datetime import datetime
-
-# Extract all assistant messages and compute token counts for each
 
 def get_tokenizer(tokenizer_name):
     if tokenizer_name == "tiktoken":
@@ -14,16 +10,6 @@ def get_tokenizer(tokenizer_name):
             return lambda text: len(enc.encode(text))
         except ImportError:
             raise ImportError("tiktoken is not installed. Please install it with 'pip install tiktoken'")
-    elif tokenizer_name == "anthropic-tokenizer":
-        try:
-            from anthropic_tokenizer import Tokenizer
-
-            tokenizer = Tokenizer()
-            return lambda text: len(tokenizer.encode(text))
-        except ImportError:
-            raise ImportError("anthropic-tokenizer is not installed. Please install it with 'pip install anthropic-tokenizer'")
-    elif tokenizer_name == "xenova-claude-tokenizer":
-        raise NotImplementedError("Xenova tokenizer is only available in JavaScript environments.")
     else:
         raise ValueError(f"Unknown tokenizer: {tokenizer_name}")
 
@@ -152,7 +138,7 @@ def analyze_logs(session_logs, tokenizer_name="tiktoken"):
 
     return analyzed
 
-def print_summary_stats(token_logs):
+def print_analysis(token_logs):
 
     # Convert to DataFrame 
     df = pd.DataFrame(token_logs)
@@ -162,7 +148,7 @@ def print_summary_stats(token_logs):
 
     # Mark outliers in a new column
     df['total_io_tokens'] = df['input_tokens'] + df['output_tokens']
-    threshold = df['total_io_tokens'].quantile(0.99)
+    threshold = df['total_io_tokens'].mean() + 3 * df['total_io_tokens'].std()
     df['flag'] = df['total_io_tokens'].apply(lambda x: "<--OUTLIER" if x > threshold else "")
 
     print("\n=== Session Details ===")
@@ -186,6 +172,18 @@ def print_summary_stats(token_logs):
     print("Top 10 most token-intensive interactions:")
     print(df.nlargest(10, 'total_io_tokens')[['datetime', 'created', 'type', 'total_io_tokens', 'flag']].to_string(index=False))
 
+def read_jsonl_file(filepath):
+    """
+    Reads a JSONL file and returns a list of parsed JSON objects.
+    Skips empty lines.
+    """
+    session_logs = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():  # Skip empty lines
+                session_logs.append(json.loads(line))
+    return session_logs
+
 def main():
     parser = argparse.ArgumentParser(description='Analyze session logs for token usage')
     parser.add_argument('input_file', help='Path to the JSON log file')
@@ -193,17 +191,13 @@ def main():
     args = parser.parse_args()
 
     # Read the JSONL file with UTF-8 encoding
-    session_logs = []
-    with open(args.input_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.strip():  # Skip empty lines
-                session_logs.append(json.loads(line))
+    session_logs = read_jsonl_file(args.input_file)
 
     # Analyze the logs
     token_logs = analyze_logs(session_logs, tokenizer_name=args.tokenizer)
 
     # Print comprehensive analysis
-    print_summary_stats(token_logs)
+    print_analysis(token_logs)
 
 if __name__ == "__main__":
     main()
