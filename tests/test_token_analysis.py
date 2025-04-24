@@ -174,6 +174,26 @@ class TestTokenAnalysis(unittest.TestCase):
         # Test with empty tools list
         empty_schema_tokens = count_tools_for_schema(self.mock_tokenizer, [])
         self.assertEqual(empty_schema_tokens, 0)
+        
+        # Test with a tool that has enum values
+        tools_with_enum = [
+            {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "input_schema": {
+                    "properties": {
+                        "unit": {
+                            "type": "string",
+                            "description": "Temperature unit",
+                            "enum": ["celsius", "fahrenheit", "kelvin"]
+                        }
+                    }
+                }
+            }
+        ]
+        enum_schema_tokens = count_tools_for_schema(self.mock_tokenizer, tools_with_enum)
+        self.assertGreater(enum_schema_tokens, schema_tokens, 
+                          "Tools with enum values should have more tokens")
 
     def test_analyze_logs(self):
         # Test analyzing logs

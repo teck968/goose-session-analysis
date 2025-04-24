@@ -47,6 +47,11 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
             self.assertIn('input_tokens', msg)
             self.assertIn('output_tokens', msg)
             self.assertIn('context_tokens', msg)
+            
+        # Verify that the first user message has system overhead added
+        first_user_msg = next((msg for msg in analyzed if msg['role'] == 'user'), None)
+        self.assertIsNotNone(first_user_msg)
+        self.assertGreater(first_user_msg['input_tokens'], 3000)  # SYSTEM_PROMPT_OVERHEAD
     
     @patch('argparse.ArgumentParser.parse_args')
     @patch('token_analysis.tiktoken')

@@ -95,7 +95,7 @@ def count_tools_for_schema(tokenizer, tools):
     count = 0
     for tool in tools:
         count += FUNC_INIT
-        # Name and description
+        # Name and description - strip trailing periods as in Goose
         name = tool.get('name', '')
         description = tool.get('description', '').rstrip('.')
         count += tokenizer(f"{name}:{description}")
@@ -110,12 +110,13 @@ def count_tools_for_schema(tokenizer, tools):
                 p_desc = value.get('description', '').rstrip('.')
                 count += tokenizer(f"{key}:{p_type}:{p_desc}")
                 
-                # Enum values
+                # Enum values - exactly matching Goose's implementation
                 enum_values = value.get('enum', [])
                 if enum_values:
-                    count += ENUM_INIT
+                    count += ENUM_INIT  # Adjustment for enum list start
                     for item in enum_values:
-                        count += ENUM_ITEM + tokenizer(str(item))
+                        count += ENUM_ITEM  # Fixed overhead per enum item
+                        count += tokenizer(str(item))  # Tokens for the enum value itself
     
     count += FUNC_END
     return count
@@ -126,12 +127,13 @@ def analyze_logs(session_logs, tokenizer_name="tiktoken"):
     summary = session_logs[0]
     messages = [entry for entry in session_logs[1:] if 'role' in entry and 'content' in entry]
 
-    # Constants from Goose codebase
-    TOKENS_PER_MESSAGE = 4
-    ASSISTANT_REPLY_TOKENS = 3
-    SYSTEM_PROMPT_OVERHEAD = 3000
+    # Constants from Goose codebase (context_mgmt/common.rs)
+    TOKENS_PER_MESSAGE = 4  # From token_counter.rs
+    ASSISTANT_REPLY_TOKENS = 3  # From token_counter.rs
+    SYSTEM_PROMPT_OVERHEAD = 3000  # From context_mgmt/common.rs
+    ESTIMATE_FACTOR = 0.7  # From context_mgmt/common.rs
     
-    # Extract tools and calculate schema tokens once
+    # Extract tools and calculate schema tokens once using Goose's logic
     tools = summary.get('tools', [])
     tools_schema_tokens = count_tools_for_schema(tokenizer, tools)
 
