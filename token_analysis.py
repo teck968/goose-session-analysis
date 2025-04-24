@@ -49,82 +49,164 @@ def extract_by_criteria(obj, match_fn, value_fn, join_str=" ", recursive=True):
     # Only include non-None results, join as string
     return join_str.join(str(r) for r in results if r is not None)
 
+def extract_tool_data(content, tool_type):
+    """
+    Extract tool requests or responses from message content
+    
+    Parameters:
+        content: The message content to search
+        tool_type: Either "toolRequest" or "toolResponse"
+        
+    Returns:
+        List of tool data dictionaries
+    """
+    tool_data = []
+    
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == tool_type:
+                if tool_type == "toolRequest":
+                    # Extract tool call details
+                    tool_call = item.get("toolCall", {})
+                    tool_data.append({
+                        "id": item.get("id", ""),
+                        "name": tool_call.get("name", ""),
+                        "arguments": tool_call.get("arguments", {})
+                    })
+                elif tool_type == "toolResponse":
+                    # Extract tool response details
+                    tool_data.append({
+                        "id": item.get("id", ""),
+                        "content": item.get("content", [])
+                    })
+    
+    return tool_data
+
+def count_tool_tokens(tokenizer, tool_data, is_request=True):
+    """
+    Count tokens for tool requests or responses based on Goose's logic
+    
+    Parameters:
+        tokenizer: Function to count tokens in a string
+        tool_data: List of tool data dictionaries
+        is_request: True if counting tool requests, False for responses
+        
+    Returns:
+        Total token count for the tools
+    """
+    tokens = 0
+    
+    for tool in tool_data:
+        if is_request:
+            # Format similar to how Goose formats tool requests in token_counter.rs
+            tool_text = f"{tool['id']}:{tool['name']}:{json.dumps(tool['arguments'])}"
+            tokens += tokenizer(tool_text)
+        else:
+            # Format similar to how Goose formats tool responses
+            response_text = ""
+            for content_item in tool.get("content", []):
+                if isinstance(content_item, dict) and content_item.get("type") == "text":
+                    response_text += content_item.get("text", "")
+                elif isinstance(content_item, str):
+                    response_text += content_item
+            
+            tokens += tokenizer(f"{tool['id']}:{response_text}")
+    
+    return tokens
+
 def analyze_logs(session_logs, tokenizer_name="tiktoken"):
     tokenizer = get_tokenizer(tokenizer_name)
     summary = session_logs[0]
     messages = [entry for entry in session_logs[1:] if 'role' in entry and 'content' in entry]
 
-    PER_MESSAGE_OVERHEAD = 3  # Adjust for your provider
+    # Constants from Goose codebase
+    TOKENS_PER_MESSAGE = 4  # From token_counter.rs
+    ASSISTANT_REPLY_TOKENS = 3  # From token_counter.rs
+    SYSTEM_PROMPT_OVERHEAD = 3000  # From context_mgmt/common.rs
+    TOOLS_OVERHEAD = 5000  # From context_mgmt/common.rs
 
     analyzed = []
     context_messages = []
     for msg in messages:
         content = msg['content']
+        role = msg.get('role', '')
+        created = msg.get('created', 0)
+        
+        # Extract all text content
         all_text = extract_by_criteria(
             content,
             match_fn=lambda x: isinstance(x, str) or (isinstance(x, dict) and x.get("type") == "text"),
             value_fn=lambda x: x if isinstance(x, str) else x.get("text", ""),
             join_str=" "
         )
-        role = msg.get('role', '')
-        created = msg.get('created', 0)
-        content = msg.get('content', {})
-
-        msg_text = f"{role} {all_text}"
-        context_messages.append(msg_text)
-
-        # Determine msg_type
+        
+        # Extract tool requests and responses
+        tool_requests = extract_tool_data(content, "toolRequest")
+        tool_responses = extract_tool_data(content, "toolResponse")
+        
+        # Determine message type
         if role == 'user':
-            has_tool_response = bool(extract_by_criteria(
-                content,
-                match_fn=lambda x: isinstance(x, dict) and x.get("type") == "toolResponse",
-                value_fn=lambda x: True,
-                join_str="",
-                recursive=False
-            ))
-            if has_tool_response:
-                msg_type = "tool_call"
-            else:
-                msg_type = "user_input"
+            has_tool_response = bool(tool_responses)
+            msg_type = "tool_call" if has_tool_response else "user_input"
         elif role == 'assistant':
             msg_type = "agent_output"
         else:
             msg_type = "unknown"
-
-        # Determine details field
-        if msg_type in ("user_input", "agent_output"):
-            details = extract_by_criteria(
-                content,
-                match_fn=lambda x: isinstance(x, dict) and x.get("type") == "text",
-                value_fn=lambda x: x.get("text", ""),
-                join_str=" ",
-                recursive=False
-            )
-        elif msg_type == "tool_call":
-            details = extract_by_criteria(
-                content,
-                match_fn=lambda x: isinstance(x, dict) and x.get("type") == "toolResponse",
-                value_fn=lambda x: x.get("id", ""),
-                join_str="",
-                recursive=False
-            )
-        else:
-            details = ""
-
+            
+        # Add message to context
+        msg_text = f"{role} {all_text}"
+        context_messages.append(msg_text)
+        
+        # Calculate token counts
+        message_overhead = TOKENS_PER_MESSAGE
+        if role == 'assistant':
+            message_overhead += ASSISTANT_REPLY_TOKENS
+            
+        # Count tokens for text content
+        text_tokens = tokenizer(all_text) if all_text else 0
+        
+        # Count tokens for tool requests and responses
+        tool_request_tokens = count_tool_tokens(tokenizer, tool_requests, is_request=True)
+        tool_response_tokens = count_tool_tokens(tokenizer, tool_responses, is_request=False)
+        
+        # Calculate total tokens for this message
+        total_tokens = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead
+        
+        # Determine context, input, and output tokens
         if role == 'user':
-            context_text = " ".join(context_messages[:-1])
-            context_tokens = tokenizer(context_text) + PER_MESSAGE_OVERHEAD * len(context_messages[:-1]) if context_text else 0
-            input_tokens = tokenizer(all_text) + PER_MESSAGE_OVERHEAD
+            # Calculate context tokens from previous messages
+            if context_messages[:-1]:
+                context_text = " ".join(context_messages[:-1])
+                context_tokens = tokenizer(context_text)
+                # Add message overhead for each previous message
+                context_tokens += TOKENS_PER_MESSAGE * len(context_messages[:-1])
+                # Add assistant reply tokens for assistant messages
+                for i, msg in enumerate(context_messages[:-1]):
+                    if msg.startswith("assistant"):
+                        context_tokens += ASSISTANT_REPLY_TOKENS
+            else:
+                context_tokens = 0
+                
+            input_tokens = total_tokens
             output_tokens = 0
         elif role == 'assistant':
             context_tokens = 0
-            output_tokens = tokenizer(all_text) + PER_MESSAGE_OVERHEAD
             input_tokens = 0
+            output_tokens = total_tokens
         else:
             context_tokens = 0
             input_tokens = 0
             output_tokens = 0
-
+            
+        # Determine details field (truncated for display)
+        if msg_type in ("user_input", "agent_output"):
+            details = all_text[:75] + ("..." if len(all_text) > 75 else "")
+        elif msg_type == "tool_call":
+            tool_ids = [tool.get("id", "") for tool in tool_responses]
+            details = ", ".join(tool_ids)
+        else:
+            details = ""
+            
         analyzed.append({
             'role': role,
             'type': msg_type,
@@ -135,11 +217,18 @@ def analyze_logs(session_logs, tokenizer_name="tiktoken"):
             'output_tokens': output_tokens,
             'details': details,
         })
-
+    
+    # Add system prompt and tools overhead to the first message if it exists
+    if analyzed and any(item['role'] == 'user' for item in analyzed):
+        # Find the first user message
+        for item in analyzed:
+            if item['role'] == 'user':
+                item['input_tokens'] += SYSTEM_PROMPT_OVERHEAD + TOOLS_OVERHEAD
+                break
+        
     return analyzed
 
 def print_analysis(token_logs):
-
     # Convert to DataFrame 
     df = pd.DataFrame(token_logs)
 
@@ -156,12 +245,23 @@ def print_analysis(token_logs):
     df['details'] = df['details'].astype(str).str.ljust(COL_WIDTH)
     print(df[['datetime', 'created', 'type', 'context_tokens', 'input_tokens', 'output_tokens', 'flag', 'details']].to_string(index=False, max_colwidth=COL_WIDTH))
     
+    # Calculate metrics with more accurate token counts
+    system_overhead = 0
+    if not df.empty and 'input_tokens' in df.columns:
+        # Find the first user message which should have the system overhead
+        first_user = df[df['role'] == 'user'].iloc[0] if not df[df['role'] == 'user'].empty else None
+        if first_user is not None:
+            # Extract just the system overhead portion
+            system_overhead = 8000  # SYSTEM_PROMPT_OVERHEAD + TOOLS_OVERHEAD
+    
     metrics = [
         ("Total interactions", len(df)),
+        ("System prompt & tools overhead", f"{system_overhead:,}"),
         ("Total context tokens", f"{df['context_tokens'].sum():,}"),
-        ("Total user input tokens", f"{df[df['type'] == 'user_input']['input_tokens'].sum():,}"),
+        ("Total user input tokens", f"{df[df['type'] == 'user_input']['input_tokens'].sum() - system_overhead:,}"),
         ("Total tool input tokens", f"{df[df['type'] == 'tool_call']['input_tokens'].sum():,}"),
         ("Total agent output tokens", f"{df['output_tokens'].sum():,}"),
+        ("Total tokens (including overhead)", f"{df['input_tokens'].sum() + df['output_tokens'].sum():,}"),
         ("Average i/o tokens per interaction", f"{(df['input_tokens'] + df['output_tokens']).mean():.1f}")
     ]
 
