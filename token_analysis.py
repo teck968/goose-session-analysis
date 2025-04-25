@@ -39,23 +39,27 @@ def extract_by_criteria(obj, match_fn, value_fn, join_str=" "):
 def count_tool_tokens(tokenizer, tool_data, is_request=True):
     """Count tokens for tool requests or responses based on Goose's logic"""
     tokens = 0
-    
+
     for tool in tool_data:
         if is_request:
             # Format matches token_counter.rs implementation
             tool_text = f"{tool['id']}:{tool['name']}:{json.dumps(tool['arguments'])}"
             tokens += tokenizer(tool_text)
         else:
-            # Extract text from tool response content
-            response_text = ""
+            # Extract text from tool response content, matching Rust implementation
+            text_items = []
             for item in tool.get("content", []):
                 if isinstance(item, dict) and item.get("type") == "text":
-                    response_text += item.get("text", "")
+                    text_items.append(item.get("text", ""))
                 elif isinstance(item, str):
-                    response_text += item
-            
+                    text_items.append(item)
+
+            # Join with newlines to match Rust's texts.join("\n")
+            response_text = "\n".join(text_items)
+
+            # Format matches message.rs implementation: just id + text
             tokens += tokenizer(f"{tool['id']}:{response_text}")
-    
+
     return tokens
 
 def count_tools_for_schema(tokenizer, tools):

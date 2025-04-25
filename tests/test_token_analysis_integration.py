@@ -61,27 +61,28 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
         # Setup mock tokenizer
         mock_encoding = MagicMock()
         mock_encoding.encode.return_value = [1, 2, 3]  # Always return 3 tokens
-        mock_get_encoding.return_value = mock_encoding        # Setup mock tokenizer
-        mock_encoding = mock_get_encoding.return_value
-        mock_encoding.encode.return_value = [1, 2, 3]  # Always return 3 tokens
-        
-        # Setup mock args
-        mock_args = mock_parse_args.return_value
+        mock_get_encoding.return_value = mock_encoding
+
+        # Setup mock args - CHANGE THIS PART
+        mock_args = MagicMock()
         mock_args.input_file = self.test_file
         mock_args.tokenizer = 'tiktoken'
-        
+        # Set col_width as an integer instead of letting it be a MagicMock
+        mock_args.col_width = 100  # Explicitly set to an integer
+        mock_parse_args.return_value = mock_args
+
         # Capture stdout to check output
         captured_output = io.StringIO()
         with redirect_stdout(captured_output):
             main()
-        
+
         output = captured_output.getvalue()
-        
+
         # Check that the output contains expected sections
         self.assertIn("=== Session Details ===", output)
         self.assertIn("=== Session Summary ===", output)
         self.assertIn("=== Token Usage Distribution ===", output)
-        
+
         # Check that the analysis completed
         self.assertIn("Analysis complete!", output)
 
