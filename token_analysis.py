@@ -36,30 +36,6 @@ def extract_by_criteria(obj, match_fn, value_fn, join_str=" "):
     walk(obj)
     return join_str.join(str(r) for r in results if r is not None)
 
-def extract_tool_data(content, tool_type):
-    """Extract tool requests or responses from message content"""
-    tool_data = []
-    
-    if not isinstance(content, list):
-        return tool_data
-        
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == tool_type:
-            if tool_type == "toolRequest":
-                tool_call = item.get("toolCall", {})
-                tool_data.append({
-                    "id": item.get("id", ""),
-                    "name": tool_call.get("name", ""),
-                    "arguments": tool_call.get("arguments", {})
-                })
-            elif tool_type == "toolResponse":
-                tool_data.append({
-                    "id": item.get("id", ""),
-                    "content": item.get("content", [])
-                })
-    
-    return tool_data
-
 def count_tool_tokens(tokenizer, tool_data, is_request=True):
     """Count tokens for tool requests or responses based on Goose's logic"""
     tokens = 0
@@ -144,7 +120,7 @@ def extract_tool_data(content, tool_type):
             elif tool_type == "toolResponse":
                 tool_data.append({
                     "id": item.get("id", ""),
-                    "content": item.get("toolResult", {}).get("value", [])
+                    "content": item.get("toolResult", {}).get("value", [])                              # TODO: Check if the rust code calculates tokens with escapes, if not then convert to non-escaped string
                 })
 
     return tool_data
@@ -271,7 +247,7 @@ def analyze_logs(session_logs, tokenizer_name):
 
         # Create display details
         if msg_type in ("user_input", "agent_output"):
-            details = all_text[:75] + ("..." if len(all_text) > 75 else "")
+            details = all_text
         elif msg_type == "tool_call":
             # Find the previous assistant message to get the tool requests
             prev_assistant_idx = next((i for i in range(len(context_messages)-2, -1, -1)
@@ -304,7 +280,7 @@ def analyze_logs(session_logs, tokenizer_name):
 
     return analyzed
 
-def print_analysis(token_logs):
+def print_analysis(token_logs, col_width=100):
     """Print a formatted analysis of token usage"""
     df = pd.DataFrame(token_logs)
     
@@ -318,10 +294,11 @@ def print_analysis(token_logs):
 
     # Print session details table
     print("\n=== Session Details ===")
-    COL_WIDTH = 75
-    df['details'] = df['details'].astype(str).str.ljust(COL_WIDTH)
-    columns = ['datetime', 'created', 'type', 'context_tokens', 'input_tokens', 'output_tokens', 'flag', 'details']
-    print(df[columns].to_string(index=False, max_colwidth=COL_WIDTH))
+
+    # Set the details column width
+    df['details'] = df['details'].astype(str).str.ljust(col_width)
+
+    print(df[['datetime', 'created', 'type', 'context_tokens', 'input_tokens', 'output_tokens', 'flag', 'details']].to_string(index=False, max_colwidth=col_width))
     
     # Calculate system overhead
     system_overhead = 0
@@ -373,12 +350,14 @@ def main():
     parser.add_argument('--tokenizer', default='tiktoken', 
                         choices=['tiktoken'],
                         help='Tokenizer to use for counting')
+    parser.add_argument('--col-width', type=int, default=100,
+                        help='Column width for the details field in output (default: 100)')
     args = parser.parse_args()
 
     print(f"Analyzing {args.input_file} with {args.tokenizer} tokenizer...")
     session_logs = read_jsonl_file(args.input_file)
     token_logs = analyze_logs(session_logs, tokenizer_name=args.tokenizer)
-    print_analysis(token_logs)
+    print_analysis(token_logs, col_width=args.col_width)
     print("\nAnalysis complete!")
 
 if __name__ == "__main__":
