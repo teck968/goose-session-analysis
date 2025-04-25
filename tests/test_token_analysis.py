@@ -139,16 +139,34 @@ class TestTokenAnalysis(unittest.TestCase):
         self.assertEqual(result, "Hello world The weather is sunny and 22°C")
 
     def test_extract_tool_data(self):
-        # Test extracting tool requests
-        tool_requests = extract_tool_data(self.sample_content, "toolRequest")
+        # Load the sample session data
+        sample_file = os.path.join('tests', 'test_data', 'sample_session.jsonl')
+        with open(sample_file, 'r') as f:
+            session_data = [json.loads(line) for line in f if line.strip()]
+
+        # Extract the assistant message with tool request
+        assistant_msg = next(msg for msg in session_data if msg.get('role') == 'assistant' and any(
+            item.get('type') == 'toolRequest' for item in msg.get('content', []) if isinstance(item, dict)
+        ))
+
+        # Test tool request extraction
+        tool_requests = extract_tool_data(assistant_msg['content'], "toolRequest")
         self.assertEqual(len(tool_requests), 1)
+        self.assertEqual(tool_requests[0]["id"], "tool-1")
         self.assertEqual(tool_requests[0]["name"], "get_weather")
-        
-        # Test extracting tool responses
-        tool_responses = extract_tool_data(self.sample_content, "toolResponse")
+        self.assertEqual(tool_requests[0]["arguments"], {"location": "San Francisco", "unit": "celsius"})
+
+        # Extract the user message with tool response
+        user_msg = next(msg for msg in session_data if msg.get('role') == 'user' and any(
+            item.get('type') == 'toolResponse' for item in msg.get('content', []) if isinstance(item, dict)
+        ))
+
+        # Test tool response extraction
+        tool_responses = extract_tool_data(user_msg['content'], "toolResponse")
         self.assertEqual(len(tool_responses), 1)
         self.assertEqual(tool_responses[0]["id"], "tool-1")
-
+        self.assertEqual(tool_responses[0]["content"], [{"type": "text", "text": "The weather is sunny and 22°C"}])
+        
     def test_count_tool_tokens(self):
         # Test counting tokens for tool requests
         tool_requests = extract_tool_data(self.sample_content, "toolRequest")

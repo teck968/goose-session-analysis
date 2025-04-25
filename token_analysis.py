@@ -124,6 +124,70 @@ def count_tools_for_schema(tokenizer, tools):
     count += FUNC_END
     return count
 
+def extract_tool_data(content, tool_type):
+    """Extract tool requests or responses from message content"""
+    tool_data = []
+
+    if not isinstance(content, list):
+        return tool_data
+
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == tool_type:
+            if tool_type == "toolRequest":
+                tool_call = item.get("toolCall", {})
+                value = tool_call.get("value", {})
+                tool_data.append({
+                    "id": item.get("id", ""),
+                    "name": value.get("name", ""),
+                    "arguments": value.get("arguments", {})
+                })
+            elif tool_type == "toolResponse":
+                tool_data.append({
+                    "id": item.get("id", ""),
+                    "content": item.get("toolResult", {}).get("value", [])
+                })
+
+    return tool_data
+
+def format_tool_call_details(tool_requests, tool_responses):
+    """Format tool call details to show function name and parameter values"""
+    if not tool_responses:
+        return ""
+
+    # Match tool responses with their requests
+    details = []
+    for response in tool_responses:
+        response_id = response.get("id", "")
+        # Find matching request
+        matching_request = next((req for req in tool_requests if req.get("id") == response_id), None)
+
+        if matching_request:
+            # Get function name
+            func_name = matching_request.get("name", "unknown")
+
+            # Format arguments compactly with values
+            args = matching_request.get("arguments", {})
+            if isinstance(args, dict):
+                # Format as key:value pairs, but limit to first 2 args for brevity
+                arg_items = list(args.items())
+                if len(arg_items) > 2:
+                    # For complex values, just show a brief representation
+                    arg_str = ", ".join(f"{k}:{repr(v)[:50]}" for k, v in arg_items[:2])
+                    arg_str += f", +{len(arg_items)-2} more"
+                else:
+                    arg_str = ", ".join(f"{k}:{repr(v)[:50]}" for k, v in arg_items)
+
+                # Replace long strings with truncated versions
+                arg_str = arg_str.replace("'", "")
+            else:
+                arg_str = str(args)
+
+            details.append(f"{func_name}({arg_str})")
+        else:
+            details.append(response_id)
+
+    return ", ".join(details)
+
 def analyze_logs(session_logs, tokenizer_name):
     """Analyze token usage in a Goose session log"""
     tokenizer = get_tokenizer(tokenizer_name)
@@ -135,36 +199,36 @@ def analyze_logs(session_logs, tokenizer_name):
     ASSISTANT_REPLY_TOKENS = 3  # From token_counter.rs
     SYSTEM_PROMPT_OVERHEAD = 3000  # From context_mgmt/common.rs
     ESTIMATE_FACTOR = 0.7  # From context_mgmt/common.rs
-    
+
     # Extract tools and calculate schema tokens once using Goose's logic
     tools = summary.get('tools', [])
     tools_schema_tokens = count_tools_for_schema(tokenizer, tools)
 
     analyzed = []
     context_messages = []
-    
-    for msg in messages:
+
+    for i, msg in enumerate(messages):
         content = msg['content']
         role = msg.get('role', '')
         created = msg.get('created', 0)
-        
+
         # Extract text and tool data
         all_text = extract_by_criteria(
             content,
             match_fn=lambda x: isinstance(x, str) or (isinstance(x, dict) and x.get("type") == "text"),
             value_fn=lambda x: x if isinstance(x, str) else x.get("text", "")
         )
-        
+
         tool_requests = extract_tool_data(content, "toolRequest")
         tool_responses = extract_tool_data(content, "toolResponse")
-        
+
         # Determine message type
         msg_type = "unknown"
         if role == 'user':
             msg_type = "tool_call" if tool_responses else "user_input"
         elif role == 'assistant':
             msg_type = "agent_output"
-            
+
         # Store message for context calculation
         context_messages.append({
             'role': role,
@@ -172,23 +236,23 @@ def analyze_logs(session_logs, tokenizer_name):
             'tool_requests': tool_requests,
             'tool_responses': tool_responses
         })
-        
+
         # Calculate tokens following Goose's count_chat_tokens logic
         message_overhead = TOKENS_PER_MESSAGE
         if role == 'assistant':
             message_overhead += ASSISTANT_REPLY_TOKENS
-            
+
         # Count tokens for content
         text_tokens = tokenizer(all_text) if all_text else 0
         tool_request_tokens = count_tool_tokens(tokenizer, tool_requests, is_request=True)
         tool_response_tokens = count_tool_tokens(tokenizer, tool_responses, is_request=False)
         total_tokens = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead
-        
+
         # Set context, input, and output tokens
         context_tokens = 0
         input_tokens = 0
         output_tokens = 0
-        
+
         if role == 'user':
             # Calculate context tokens from previous messages
             if len(context_messages) > 1:
@@ -196,23 +260,31 @@ def analyze_logs(session_logs, tokenizer_name):
                     context_tokens += TOKENS_PER_MESSAGE
                     if prev_msg['role'] == 'assistant':
                         context_tokens += ASSISTANT_REPLY_TOKENS
-                    
+
                     context_tokens += tokenizer(prev_msg['text']) if prev_msg['text'] else 0
                     context_tokens += count_tool_tokens(tokenizer, prev_msg['tool_requests'], is_request=True)
                     context_tokens += count_tool_tokens(tokenizer, prev_msg['tool_responses'], is_request=False)
-            
+
             input_tokens = total_tokens
         elif role == 'assistant':
             output_tokens = total_tokens
-            
+
         # Create display details
         if msg_type in ("user_input", "agent_output"):
             details = all_text[:75] + ("..." if len(all_text) > 75 else "")
         elif msg_type == "tool_call":
-            details = ", ".join(tool.get("id", "") for tool in tool_responses)
+            # Find the previous assistant message to get the tool requests
+            prev_assistant_idx = next((i for i in range(len(context_messages)-2, -1, -1)
+                                     if context_messages[i]['role'] == 'assistant'), None)
+
+            prev_tool_requests = []
+            if prev_assistant_idx is not None:
+                prev_tool_requests = context_messages[prev_assistant_idx]['tool_requests']
+
+            details = format_tool_call_details(prev_tool_requests, tool_responses)
         else:
             details = ""
-            
+
         analyzed.append({
             'role': role,
             'type': msg_type,
@@ -222,14 +294,14 @@ def analyze_logs(session_logs, tokenizer_name):
             'output_tokens': output_tokens,
             'details': details,
         })
-    
+
     # Add system prompt and tools overhead to the first user message
     if analyzed:
         for item in analyzed:
             if item['role'] == 'user':
                 item['input_tokens'] += SYSTEM_PROMPT_OVERHEAD + tools_schema_tokens
                 break
-        
+
     return analyzed
 
 def print_analysis(token_logs):
