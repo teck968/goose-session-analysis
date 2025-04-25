@@ -120,7 +120,7 @@ def extract_tool_data(content, tool_type):
             elif tool_type == "toolResponse":
                 tool_data.append({
                     "id": item.get("id", ""),
-                    "content": item.get("toolResult", {}).get("value", [])                              # TODO: Check if the rust code calculates tokens with escapes, if not then convert to non-escaped string
+                    "content": item.get("toolResult", {}).get("value", []) 
                 })
 
     return tool_data
