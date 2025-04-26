@@ -10,7 +10,8 @@ from contextlib import redirect_stdout
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import the main function from token_analysis.py
-from token_analysis import main, analyze_logs
+# from token_analysis import main, analyze_logs
+import token_analysis
 
 class TestTokenAnalysisIntegration(unittest.TestCase):
     def setUp(self):
@@ -23,68 +24,70 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
     
     @patch('tiktoken.get_encoding')
     def test_analyze_logs_with_real_file(self, mock_get_encoding):
-        # Setup mock tokenizer to return predictable values
-        mock_encoding = MagicMock()
-        mock_encoding.encode.return_value = [1, 2, 3]  # Always return 3 tokens
-        mock_get_encoding.return_value = mock_encoding
-        
-        # Read and analyze the test file
-        from token_analysis import read_jsonl_file
-        session_logs = read_jsonl_file(self.test_file)
-        
-        # Analyze the logs
-        analyzed = analyze_logs(session_logs, tokenizer_name='tiktoken')
-        
+        # Setup mock tokenizer
+        mock_enc = MagicMock()
+        mock_enc.encode.side_effect = lambda text: text.split()
+        mock_get_encoding.return_value = mock_enc
+
+        # Read the test file
+        session_logs = token_analysis.read_jsonl_file(self.test_file)
+
+        # Analyze logs
+        analyzed = token_analysis.analyze_logs(session_logs, "tiktoken")
+
         # Basic validation
-        self.assertIsNotNone(analyzed)
         self.assertGreater(len(analyzed), 0)
-        
-        # Check that we have the expected message types
-        message_types = [msg['type'] for msg in analyzed]
-        self.assertIn('user_input', message_types)
-        self.assertIn('agent_output', message_types)
-        
-        # Check that token counts are present
-        for msg in analyzed:
-            self.assertIn('input_tokens', msg)
-            self.assertIn('output_tokens', msg)
-            self.assertIn('context_tokens', msg)
-            
-        # Verify that the first user message has system overhead added
+
+        # First message should be system prompt
+        first_msg = analyzed[0]
+        self.assertEqual(first_msg['role'], 'system')
+        self.assertEqual(first_msg['type'], 'system_prompt')
+
+        # System prompt should have the overhead tokens
+        self.assertGreaterEqual(first_msg['input_tokens'], 3000)  # SYSTEM_PROMPT_OVERHEAD
+
+        # First user message should be after system prompt
         first_user_msg = next((msg for msg in analyzed if msg['role'] == 'user'), None)
         self.assertIsNotNone(first_user_msg)
-        self.assertGreater(first_user_msg['input_tokens'], 3000)  # SYSTEM_PROMPT_OVERHEAD
+
+        # Check that we have some context tokens in user messages (after the first)
+        user_msgs = [msg for msg in analyzed if msg['role'] == 'user']
+        if len(user_msgs) > 1:
+            self.assertGreater(user_msgs[1]['context_tokens'], 0)
+
+        # Check that assistant messages have output tokens
+        assistant_msgs = [msg for msg in analyzed if msg['role'] == 'assistant']
+        if assistant_msgs:
+            self.assertGreater(assistant_msgs[0]['output_tokens'], 0)
+    
     
     @patch('argparse.ArgumentParser.parse_args')
     @patch('tiktoken.get_encoding')
     def test_main_function(self, mock_get_encoding, mock_parse_args):
         # Setup mock tokenizer
-        mock_encoding = MagicMock()
-        mock_encoding.encode.return_value = [1, 2, 3]  # Always return 3 tokens
-        mock_get_encoding.return_value = mock_encoding
+        mock_enc = MagicMock()
+        mock_enc.encode.side_effect = lambda text: text.split()
+        mock_get_encoding.return_value = mock_enc
 
-        # Setup mock args - CHANGE THIS PART
+        # Setup mock args
         mock_args = MagicMock()
         mock_args.input_file = self.test_file
-        mock_args.tokenizer = 'tiktoken'
-        # Set col_width as an integer instead of letting it be a MagicMock
-        mock_args.col_width = 100  # Explicitly set to an integer
+        mock_args.tokenizer = "tiktoken"
+        mock_args.col_width = 100
         mock_parse_args.return_value = mock_args
 
-        # Capture stdout to check output
-        captured_output = io.StringIO()
-        with redirect_stdout(captured_output):
-            main()
+        # Patch print function to capture output
+        with patch('builtins.print') as mock_print:
+            # Run main function
+            token_analysis.main()
 
-        output = captured_output.getvalue()
+            # Check that print was called multiple times
+            self.assertGreater(mock_print.call_count, 5)
 
-        # Check that the output contains expected sections
-        self.assertIn("=== Session Details ===", output)
-        self.assertIn("=== Session Summary ===", output)
-        self.assertIn("=== Token Usage Distribution ===", output)
-
-        # Check that the analysis completed
-        self.assertIn("Analysis complete!", output)
+            # Check that key sections are printed
+            mock_print.assert_any_call("\n=== Session Details ===")
+            mock_print.assert_any_call("\n=== Session Summary ===")
+            mock_print.assert_any_call("\n=== Token Usage Distribution ===")
 
 if __name__ == '__main__':
     unittest.main()

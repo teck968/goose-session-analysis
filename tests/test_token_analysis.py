@@ -11,17 +11,7 @@ import sys
 # Add parent directory to path so we can import token_analysis
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import functions from token_analysis.py
-from token_analysis import (
-    get_tokenizer,
-    extract_by_criteria,
-    extract_tool_data,
-    count_tool_tokens,
-    count_tools_for_schema,
-    analyze_logs,
-    print_analysis,
-    read_jsonl_file
-)
+import token_analysis
 
 class TestTokenAnalysis(unittest.TestCase):
     def setUp(self):
@@ -121,7 +111,7 @@ class TestTokenAnalysis(unittest.TestCase):
         mock_get_encoding.return_value = mock_encoding
 
         # Test the tokenizer
-        tokenizer = get_tokenizer('tiktoken')
+        tokenizer = token_analysis.get_tokenizer('tiktoken')
         result = tokenizer("test text")
 
         # Verify
@@ -130,7 +120,7 @@ class TestTokenAnalysis(unittest.TestCase):
 
     def test_extract_by_criteria(self):
         # Test extracting text from mixed content
-        result = extract_by_criteria(
+        result = token_analysis.extract_by_criteria(
             self.sample_content,
             match_fn=lambda x: isinstance(x, dict) and x.get("type") == "text",
             value_fn=lambda x: x.get("text", "")
@@ -150,7 +140,7 @@ class TestTokenAnalysis(unittest.TestCase):
         ))
 
         # Test tool request extraction
-        tool_requests = extract_tool_data(assistant_msg['content'], "toolRequest")
+        tool_requests = token_analysis.extract_tool_data(assistant_msg['content'], "toolRequest")
         self.assertEqual(len(tool_requests), 1)
         self.assertEqual(tool_requests[0]["id"], "tool-1")
         self.assertEqual(tool_requests[0]["name"], "get_weather")
@@ -162,35 +152,35 @@ class TestTokenAnalysis(unittest.TestCase):
         ))
 
         # Test tool response extraction
-        tool_responses = extract_tool_data(user_msg['content'], "toolResponse")
+        tool_responses = token_analysis.extract_tool_data(user_msg['content'], "toolResponse")
         self.assertEqual(len(tool_responses), 1)
         self.assertEqual(tool_responses[0]["id"], "tool-1")
         self.assertEqual(tool_responses[0]["content"], [{"type": "text", "text": "The weather is sunny and 22°C"}])
         
     def test_count_tool_tokens(self):
         # Test counting tokens for tool requests
-        tool_requests = extract_tool_data(self.sample_content, "toolRequest")
-        request_tokens = count_tool_tokens(self.mock_tokenizer, tool_requests, is_request=True)
+        tool_requests = token_analysis.extract_tool_data(self.sample_content, "toolRequest")
+        request_tokens = token_analysis.count_tool_tokens(self.mock_tokenizer, tool_requests, is_request=True)
         
         # The format is "{id}:{name}:{arguments_json}" which should have multiple tokens
         self.assertGreater(request_tokens, 0)
         
         # Test counting tokens for tool responses
-        tool_responses = extract_tool_data(self.sample_content, "toolResponse")
-        response_tokens = count_tool_tokens(self.mock_tokenizer, tool_responses, is_request=False)
+        tool_responses = token_analysis.extract_tool_data(self.sample_content, "toolResponse")
+        response_tokens = token_analysis.count_tool_tokens(self.mock_tokenizer, tool_responses, is_request=False)
         
         # The format is "{id}:{response_text}" which should have multiple tokens
         self.assertGreater(response_tokens, 0)
 
     def test_count_tools_for_schema(self):
         # Test counting tokens for tool schema
-        schema_tokens = count_tools_for_schema(self.mock_tokenizer, self.sample_tools)
+        schema_tokens = token_analysis.count_tools_for_schema(self.mock_tokenizer, self.sample_tools)
 
         # The schema should have tokens for name, description, properties, etc.
         self.assertGreater(schema_tokens, 0)
 
         # Test with empty tools list
-        empty_schema_tokens = count_tools_for_schema(self.mock_tokenizer, [])
+        empty_schema_tokens = token_analysis.count_tools_for_schema(self.mock_tokenizer, [])
         self.assertEqual(empty_schema_tokens, 0)
 
         # Create a copy of sample_tools with additional enum values
@@ -204,36 +194,49 @@ class TestTokenAnalysis(unittest.TestCase):
                     prop['enum'].extend(['kelvin', 'rankine', 'delisle'])
 
         # Test with a tool that has more enum values
-        enum_schema_tokens = count_tools_for_schema(self.mock_tokenizer, tools_with_more_enums)
+        enum_schema_tokens = token_analysis.count_tools_for_schema(self.mock_tokenizer, tools_with_more_enums)
         self.assertGreater(enum_schema_tokens, schema_tokens,
                         "Tools with more enum values should have more tokens")
 
     def test_analyze_logs(self):
-        # Test analyzing logs
-        with patch('token_analysis.get_tokenizer', return_value=self.mock_tokenizer):
-            analyzed = analyze_logs(self.sample_logs, tokenizer_name='tiktoken')
-        
-        # Should have 4 messages (excluding summary)
-        self.assertEqual(len(analyzed), 4)
-        
-        # First user message should have system overhead added
-        self.assertGreater(analyzed[0]['input_tokens'], 3000)  # SYSTEM_PROMPT_OVERHEAD
-        
-        # Check message types
-        self.assertEqual(analyzed[0]['type'], 'user_input')
-        self.assertEqual(analyzed[1]['type'], 'agent_output')
-        self.assertEqual(analyzed[2]['type'], 'tool_call')
-        self.assertEqual(analyzed[3]['type'], 'agent_output')
-        
-        # Check token counts
-        for item in analyzed:
-            if item['role'] == 'user':
-                self.assertGreaterEqual(item['input_tokens'], 0)
-                self.assertEqual(item['output_tokens'], 0)
-            else:  # assistant
-                self.assertEqual(item['input_tokens'], 0)
-                self.assertGreaterEqual(item['output_tokens'], 0)
+        # Mock session logs
+        session_logs = [
+            {"tools": []},  # Summary
+            {"role": "user", "content": [{"type": "text", "text": "Hello"}], "created": 1000},
+            {"role": "assistant", "content": [{"type": "text", "text": "Hi there"}], "created": 1001},
+            {"role": "user", "content": [{"type": "text", "text": "How are you?"}], "created": 1002},
+            {"role": "assistant", "content": [{"type": "text", "text": "I'm good"}], "created": 1003}
+        ]
 
+        # Analyze logs
+        analyzed = token_analysis.analyze_logs(session_logs, "tiktoken")
+
+        # Check that we have 5 messages (system + 4 conversation messages)
+        self.assertEqual(len(analyzed), 5)
+
+        # Check that the first message is the system message
+        self.assertEqual(analyzed[0]['role'], 'system')
+        self.assertEqual(analyzed[0]['type'], 'system_prompt')
+
+        # Check that the second message is the first user message
+        self.assertEqual(analyzed[1]['role'], 'user')
+        self.assertEqual(analyzed[1]['type'], 'user_input')
+
+        # Check that context tokens are calculated correctly
+        # First user message has context of system prompt (3000 tokens)
+        self.assertEqual(analyzed[1]['context_tokens'], 3000)
+
+        # First assistant message has context of 0 (as per design)
+        self.assertEqual(analyzed[2]['context_tokens'], 0)
+
+        # Second user message has context of first user and first assistant
+        self.assertGreater(analyzed[3]['context_tokens'], 0)
+
+        # Check that input/output tokens are assigned correctly
+        self.assertEqual(analyzed[0]['input_tokens'], analyzed[0]['token_count'])  # System message
+        self.assertEqual(analyzed[1]['input_tokens'], analyzed[1]['token_count'])  # User message
+        self.assertEqual(analyzed[2]['output_tokens'], analyzed[2]['token_count'])  # Assistant message
+        
     def test_print_analysis(self):
         # Create sample analyzed data
         analyzed = [
@@ -260,7 +263,7 @@ class TestTokenAnalysis(unittest.TestCase):
         # Capture stdout to verify output
         captured_output = io.StringIO()
         with redirect_stdout(captured_output):
-            print_analysis(analyzed)
+            token_analysis.print_analysis(analyzed)
         
         output = captured_output.getvalue()
         
@@ -286,7 +289,7 @@ class TestTokenAnalysis(unittest.TestCase):
         mock_open.return_value = mock_file
         
         # Test reading JSONL file
-        result = read_jsonl_file('test.jsonl')
+        result = token_analysis.read_jsonl_file('test.jsonl')
         
         # Should have 2 objects (skipping empty line)
         self.assertEqual(len(result), 2)

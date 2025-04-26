@@ -175,23 +175,32 @@ def analyze_logs(session_logs, tokenizer_name):
     summary = session_logs[0]
     messages = [entry for entry in session_logs[1:] if 'role' in entry and 'content' in entry]
 
-    # Constants from Goose codebase (context_mgmt/common.rs)
-    TOKENS_PER_MESSAGE = 4  # From token_counter.rs
-    ASSISTANT_REPLY_TOKENS = 3  # From token_counter.rs
-    SYSTEM_PROMPT_OVERHEAD = 3000  # From context_mgmt/common.rs
-    
-    # Note: The following constant is not used in this code but is included for completeness
-    ESTIMATE_FACTOR = 0.7  # From context_mgmt/common.rs
+    # Constants from Goose codebase
+    TOKENS_PER_MESSAGE = 4
+    ASSISTANT_REPLY_TOKENS = 3
+    SYSTEM_PROMPT_OVERHEAD = 3000
 
-    # Extract tools and calculate schema tokens once using Goose's logic
-    # Note: This always return 0 because the tool schema is not included in the goose session logs, but is included for completeness
+    # Extract tools and calculate schema tokens
     tools = summary.get('tools', [])
-    tools_schema_tokens = count_tools_for_schema(tokenizer, tools)
+    tools_schema_tokens = count_tools_for_schema(tokenizer, tools)  # TODO[ID:validate_toolschema_present]: Validate that this function works as expected on goose session logs. I suspect it doesn't because the data is not present in the logs.
 
-    analyzed = []
-    context_messages = []
+    # PHASE 1: Extract text and metadata from all messages
+    processed_messages = []
 
-    for i, msg in enumerate(messages):
+    # Add system prompt as the first message
+    processed_messages.append({
+        'role': 'system',
+        'type': 'system_prompt',
+        'created': 0,
+        'text': f"[System prompt and tools schema]",
+        'tool_requests': [],
+        'tool_responses': [],
+        'token_count': SYSTEM_PROMPT_OVERHEAD + tools_schema_tokens,
+        'details': f"System prompt and tools schema ({SYSTEM_PROMPT_OVERHEAD + tools_schema_tokens} tokens)"
+    })
+
+    # PHASE 1: Process each actual message
+    for msg in messages:
         content = msg['content']
         role = msg.get('role', '')
         created = msg.get('created', 0)
@@ -203,8 +212,8 @@ def analyze_logs(session_logs, tokenizer_name):
             value_fn=lambda x: x if isinstance(x, str) else x.get("text", "")
         )
 
-        tool_requests = extract_tool_data(content, "toolRequest")   # TODO[ID:extract_toolRequest_data]: Validate that the results match Goose's implementation
-        tool_responses = extract_tool_data(content, "toolResponse")     # TODO[ID:extract_toolResponse_data]: Validate that the results match Goose's implementation
+        tool_requests = extract_tool_data(content, "toolRequest")  # TODO[ID:validate_extract_toolRequest_data]: Validate that the results match Goose's implementation
+        tool_responses = extract_tool_data(content, "toolResponse")  # TODO[ID:validate_extract_toolResponse_data]: Validate that the results match Goose's implementation
 
         # Determine message type
         msg_type = "unknown"
@@ -213,81 +222,68 @@ def analyze_logs(session_logs, tokenizer_name):
         elif role == 'assistant':
             msg_type = "agent_output"
 
-        # Store message for context calculation
-        context_messages.append({
-            'role': role,
-            'text': all_text,
-            'tool_requests': tool_requests,
-            'tool_responses': tool_responses
-        })  # TODO[ID:validate_context_content]: Validate that the context content match Goose's implementation
-
-        # Calculate tokens following Goose's count_chat_tokens logic
-        message_overhead = TOKENS_PER_MESSAGE
-        if role == 'assistant':
-            message_overhead += ASSISTANT_REPLY_TOKENS
-
-        # Count tokens for content
-        text_tokens = tokenizer(all_text) if all_text else 0
-        tool_request_tokens = count_tool_tokens(tokenizer, tool_requests, is_request=True)  # TODO[ID:validate_tool_request_tokens]: Validate that the results match Goose's implementation
-        tool_response_tokens = count_tool_tokens(tokenizer, tool_responses, is_request=False)   # TODO[ID:validate_tool_response_tokens]: Validate that the results match Goose's implementation
-        total_tokens = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead  # TODO[ID:validate_total_tokens]: Validate that the results match Goose's implementation
-
-        # Set context, input, and output tokens
-        context_tokens = 0
-        input_tokens = 0
-        output_tokens = 0
-
-        if role == 'user':
-            # Calculate context tokens from previous messages
-            if len(context_messages) > 1:
-                for prev_msg in context_messages[:-1]:
-                    context_tokens += TOKENS_PER_MESSAGE
-                    if prev_msg['role'] == 'assistant':
-                        context_tokens += ASSISTANT_REPLY_TOKENS
-
-                    context_tokens += tokenizer(prev_msg['text']) if prev_msg['text'] else 0
-                    context_tokens += count_tool_tokens(tokenizer, prev_msg['tool_requests'], is_request=True)
-                    context_tokens += count_tool_tokens(tokenizer, prev_msg['tool_responses'], is_request=False)
-
-            input_tokens = total_tokens
-        elif role == 'assistant':
-            output_tokens = total_tokens
-
         # Create display details
         if msg_type in ("user_input", "agent_output"):
             details = all_text
         elif msg_type == "tool_call":
             # Find the previous assistant message to get the tool requests
-            prev_assistant_idx = next((i for i in range(len(context_messages)-2, -1, -1)
-                                     if context_messages[i]['role'] == 'assistant'), None)
+            prev_assistant = next((m for m in reversed(processed_messages)
+                                  if m['role'] == 'assistant'), None)
 
-            prev_tool_requests = []
-            if prev_assistant_idx is not None:
-                prev_tool_requests = context_messages[prev_assistant_idx]['tool_requests']
-
+            prev_tool_requests = prev_assistant['tool_requests'] if prev_assistant else []
             details = format_tool_call_details(prev_tool_requests, tool_responses)
         else:
             details = ""
 
-        analyzed.append({
+        processed_messages.append({
             'role': role,
             'type': msg_type,
             'created': created,
-            'context_tokens': context_tokens,
-            'input_tokens': input_tokens,
-            'output_tokens': output_tokens,
-            'details': details,
-        })
+            'text': all_text,
+            'tool_requests': tool_requests,
+            'tool_responses': tool_responses,
+            'details': details
+        })  
 
-    # Add system prompt and tools overhead to the first user message
-    # TODO[ID:validate_sysprompt_and_toolsschema_tokens]: Validate if this is correct. Isn't the tool schema included in the context tokens, accumulating from before the first user input? 
-    if analyzed:
-        for item in analyzed:
-            if item['role'] == 'user':
-                item['input_tokens'] += SYSTEM_PROMPT_OVERHEAD + tools_schema_tokens
-                break
+    # PHASE 2: Calculate token counts for each message
+    for msg in processed_messages:
+        # Skip if token count is already calculated (system prompt)
+        if 'token_count' in msg:
+            continue
 
-    return analyzed
+        # Calculate message overhead
+        message_overhead = TOKENS_PER_MESSAGE
+        if msg['role'] == 'assistant':
+            message_overhead += ASSISTANT_REPLY_TOKENS
+
+        # Count tokens for content
+        text_tokens = tokenizer(msg['text']) if msg['text'] else 0
+        tool_request_tokens = count_tool_tokens(tokenizer, msg['tool_requests'], is_request=True)  # TODO[ID:validate_tool_request_tokens]: Validate that the results match Goose's implementation
+        tool_response_tokens = count_tool_tokens(tokenizer, msg['tool_responses'], is_request=False)  # TODO[ID:validate_tool_response_tokens]: Validate that the results match Goose's implementation
+
+        # Total tokens for this message
+        msg['token_count'] = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead  # TODO[ID:validate_total_tokens]: Validate that the results match Goose's implementation
+
+    # PHASE 3: Calculate context sizes for each message
+    for i, msg in enumerate(processed_messages):
+        # Initialize context_tokens, input_tokens, and output_tokens if not present
+        msg['context_tokens'] = 0
+        msg['input_tokens'] = 0
+        msg['output_tokens'] = 0
+
+        # Only calculate context tokens for user messages
+        if msg['role'] == 'user' and i > 0:
+            # Context is the sum of all previous messages' token counts
+            msg['context_tokens'] = sum(m['token_count'] for m in processed_messages[:i])
+
+        # Set input or output tokens based on role
+        if msg['role'] in ['system', 'user']:
+            msg['input_tokens'] = msg['token_count']
+        elif msg['role'] == 'assistant':
+            msg['output_tokens'] = msg['token_count']
+
+    return processed_messages
+
 
 def print_analysis(token_logs, col_width=100):
     """Print a formatted analysis of token usage"""
