@@ -64,6 +64,7 @@ def count_tool_tokens(tokenizer, tool_data, is_request=True):
 
 def count_tools_for_schema(tokenizer, tools):
     """Count tokens for tools schema following Goose's count_tokens_for_tools logic"""
+    # TODO[ID:validate_toolschema_present]: Validate that this function works as expected on goose session logs. I suspect it doesn't because the data is not present in the logs.
     # Constants from Goose's token_counter.rs
     FUNC_INIT = 7      # Function initialization
     PROP_INIT = 3      # Properties initialization
@@ -178,9 +179,12 @@ def analyze_logs(session_logs, tokenizer_name):
     TOKENS_PER_MESSAGE = 4  # From token_counter.rs
     ASSISTANT_REPLY_TOKENS = 3  # From token_counter.rs
     SYSTEM_PROMPT_OVERHEAD = 3000  # From context_mgmt/common.rs
+    
+    # Note: The following constant is not used in this code but is included for completeness
     ESTIMATE_FACTOR = 0.7  # From context_mgmt/common.rs
 
     # Extract tools and calculate schema tokens once using Goose's logic
+    # Note: This always return 0 because the tool schema is not included in the goose session logs, but is included for completeness
     tools = summary.get('tools', [])
     tools_schema_tokens = count_tools_for_schema(tokenizer, tools)
 
@@ -199,8 +203,8 @@ def analyze_logs(session_logs, tokenizer_name):
             value_fn=lambda x: x if isinstance(x, str) else x.get("text", "")
         )
 
-        tool_requests = extract_tool_data(content, "toolRequest")
-        tool_responses = extract_tool_data(content, "toolResponse")
+        tool_requests = extract_tool_data(content, "toolRequest")   # TODO[ID:extract_toolRequest_data]: Validate that the results match Goose's implementation
+        tool_responses = extract_tool_data(content, "toolResponse")     # TODO[ID:extract_toolResponse_data]: Validate that the results match Goose's implementation
 
         # Determine message type
         msg_type = "unknown"
@@ -215,7 +219,7 @@ def analyze_logs(session_logs, tokenizer_name):
             'text': all_text,
             'tool_requests': tool_requests,
             'tool_responses': tool_responses
-        })
+        })  # TODO[ID:validate_context_content]: Validate that the context content match Goose's implementation
 
         # Calculate tokens following Goose's count_chat_tokens logic
         message_overhead = TOKENS_PER_MESSAGE
@@ -224,9 +228,9 @@ def analyze_logs(session_logs, tokenizer_name):
 
         # Count tokens for content
         text_tokens = tokenizer(all_text) if all_text else 0
-        tool_request_tokens = count_tool_tokens(tokenizer, tool_requests, is_request=True)
-        tool_response_tokens = count_tool_tokens(tokenizer, tool_responses, is_request=False)
-        total_tokens = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead
+        tool_request_tokens = count_tool_tokens(tokenizer, tool_requests, is_request=True)  # TODO[ID:validate_tool_request_tokens]: Validate that the results match Goose's implementation
+        tool_response_tokens = count_tool_tokens(tokenizer, tool_responses, is_request=False)   # TODO[ID:validate_tool_response_tokens]: Validate that the results match Goose's implementation
+        total_tokens = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead  # TODO[ID:validate_total_tokens]: Validate that the results match Goose's implementation
 
         # Set context, input, and output tokens
         context_tokens = 0
@@ -276,6 +280,7 @@ def analyze_logs(session_logs, tokenizer_name):
         })
 
     # Add system prompt and tools overhead to the first user message
+    # TODO[ID:validate_sysprompt_and_toolsschema_tokens]: Validate if this is correct. Isn't the tool schema included in the context tokens, accumulating from before the first user input? 
     if analyzed:
         for item in analyzed:
             if item['role'] == 'user':
@@ -296,11 +301,16 @@ def print_analysis(token_logs, col_width=100):
     threshold = df['total_io_tokens'].mean() + 3 * df['total_io_tokens'].std()
     df['flag'] = df['total_io_tokens'].apply(lambda x: "<--OUTLIER" if x > threshold else "")
 
+    # Set the details column width if not zero
+    if col_width > 0:
+        df['details'] = df['details'].astype(str).str.ljust(col_width)
+        max_colwidth = col_width
+    else:
+        # No truncation when col_width is 0
+        max_colwidth = None
+
     # Print session details table
     print("\n=== Session Details ===")
-
-    # Set the details column width
-    df['details'] = df['details'].astype(str).str.ljust(col_width)
 
     print(df[['datetime', 'created', 'type', 'context_tokens', 'input_tokens', 'output_tokens', 'flag', 'details']].to_string(index=False, max_colwidth=col_width))
     
