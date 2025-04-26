@@ -16,6 +16,15 @@ def get_tokenizer(tokenizer_name):
     else:
         raise NotImplementedError(f"Tokenizer '{tokenizer_name}' is not implemented.")
 
+def read_jsonl_file(filepath):
+    """Read a JSONL file and return a list of parsed JSON objects"""
+    session_logs = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():  # Skip empty lines
+                session_logs.append(json.loads(line))
+    return session_logs
+
 def extract_by_criteria(obj, match_fn, value_fn, join_str=" "):
     """Extract values from nested data structures based on matching criteria"""
     results = []
@@ -284,7 +293,6 @@ def analyze_logs(session_logs, tokenizer_name):
 
     return processed_messages
 
-
 def print_analysis(token_logs, col_width=100):
     """Print a formatted analysis of token usage"""
     df = pd.DataFrame(token_logs)
@@ -295,7 +303,7 @@ def print_analysis(token_logs, col_width=100):
     
     # Mark outliers (> 3 std dev from mean)
     threshold = df['total_io_tokens'].mean() + 3 * df['total_io_tokens'].std()
-    df['flag'] = df['total_io_tokens'].apply(lambda x: "<--OUTLIER" if x > threshold else "")
+    df['flag'] = df['total_io_tokens'].apply(lambda x: "<--OUTLIER(I+O)" if x > threshold else "")
 
     # Set the details column width if not zero
     if col_width > 0:
@@ -344,14 +352,7 @@ def print_analysis(token_logs, col_width=100):
     top_columns = ['datetime', 'created', 'type', 'total_io_tokens', 'flag']
     print(df.nlargest(10, 'total_io_tokens')[top_columns].to_string(index=False))
 
-def read_jsonl_file(filepath):
-    """Read a JSONL file and return a list of parsed JSON objects"""
-    session_logs = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.strip():  # Skip empty lines
-                session_logs.append(json.loads(line))
-    return session_logs
+
 
 def main():
     """Main entry point for the token analysis tool"""
