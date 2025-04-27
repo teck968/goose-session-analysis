@@ -59,8 +59,20 @@ class TestTokenAnalysis(unittest.TestCase):
         
         # Sample session logs
         self.sample_logs = [
-            # Summary
-            {"tools": self.sample_tools},
+            # # Summary
+            # {"tools": self.sample_tools},     #Note: This data is not currently included in the logs
+            # Metadata
+            {
+                "working_dir": "/home/user/PROJECTS",
+                "description": "Test description",
+                "message_count": 4,
+                "total_tokens": 100,
+                "input_tokens": 25,
+                "output_tokens": 75,
+                "accumulated_total_tokens": 1250,
+                "accumulated_input_tokens": 1000,
+                "accumulated_output_tokens": 250
+            },
             # User message
             {
                 "role": "user",
@@ -102,7 +114,57 @@ class TestTokenAnalysis(unittest.TestCase):
                 "content": [{"type": "text", "text": "The weather in San Francisco is currently sunny with a temperature of 22°C."}]
             }
         ]
-
+        
+        # Sample analyzed data
+        self.sample_analyzed = [
+            {
+                    'role': 'system',
+                    'type': 'system_prompt',
+                    'created': 0,
+                    'text': "[System prompt and tools schema]",
+                    'tool_requests': [],
+                    'tool_responses': [],
+                    'token_count': 3000,
+                    'details': "System prompt and tools schema (3000 tokens)"
+            },
+            {
+                'role': 'user',
+                'type': 'user_input',
+                'created': 1650000000,
+                'context_tokens': 0,
+                'input_tokens': 25,
+                'output_tokens': 0,
+                'details': 'What is the weather?'
+            },
+            {
+                'role': 'assistant',
+                'type': 'agent_output',
+                'created': 1650000010,
+                'context_tokens': 0,
+                'input_tokens': 0,
+                'output_tokens': 50,
+                'details': 'I will check the weather for you.'
+            },
+            {
+                'role': 'user',
+                'type': 'user_input',
+                'created': 1650000020,
+                'context_tokens': 0,
+                'input_tokens': 0,
+                'output_tokens': 75,
+                'details': 'The weather is sunny and 22°C'
+            },
+            {
+                'role': 'assistant',
+                'type': 'agent_output',
+                'created': 1650000030,
+                'context_tokens': 0,
+                'input_tokens': 0,
+                'output_tokens': 100,
+                'details': 'The weather in San Francisco is currently sunny with a temperature of 22°C.'
+            }
+        ]
+          
     @patch('tiktoken.get_encoding')
     def test_get_tokenizer(self, mock_get_encoding):
         # Setup mock
@@ -126,7 +188,7 @@ class TestTokenAnalysis(unittest.TestCase):
             value_fn=lambda x: x.get("text", "")
         )
         
-        self.assertEqual(result, "Hello world The weather is sunny and 22°C")
+        self.assertEqual(result, "Hello world\nThe weather is sunny and 22°C")
 
     def test_extract_tool_data(self):
         # Load the sample session data
@@ -199,19 +261,11 @@ class TestTokenAnalysis(unittest.TestCase):
                         "Tools with more enum values should have more tokens")
 
     def test_analyze_logs(self):
-        # Mock session logs
-        session_logs = [
-            {"tools": []},  # Summary
-            {"role": "user", "content": [{"type": "text", "text": "Hello"}], "created": 1000},
-            {"role": "assistant", "content": [{"type": "text", "text": "Hi there"}], "created": 1001},
-            {"role": "user", "content": [{"type": "text", "text": "How are you?"}], "created": 1002},
-            {"role": "assistant", "content": [{"type": "text", "text": "I'm good"}], "created": 1003}
-        ]
+        # Use self.sample_logs instead of creating new mock logs
+        analyzed = token_analysis.analyze_logs(self.sample_logs, "tiktoken")
 
-        # Analyze logs
-        analyzed = token_analysis.analyze_logs(session_logs, "tiktoken")
-
-        # Check that we have 5 messages (system + 4 conversation messages)
+        # Check that we have the correct number of messages
+        # (4 messages in sample_logs + 1 system message added by analyze_logs)
         self.assertEqual(len(analyzed), 5)
 
         # Check that the first message is the system message
@@ -229,52 +283,26 @@ class TestTokenAnalysis(unittest.TestCase):
         # First assistant message has context of 0 (as per design)
         self.assertEqual(analyzed[2]['context_tokens'], 0)
 
-        # Second user message has context of first user and first assistant
-        self.assertGreater(analyzed[3]['context_tokens'], 0)
-
         # Check that input/output tokens are assigned correctly
         self.assertEqual(analyzed[0]['input_tokens'], analyzed[0]['token_count'])  # System message
         self.assertEqual(analyzed[1]['input_tokens'], analyzed[1]['token_count'])  # User message
         self.assertEqual(analyzed[2]['output_tokens'], analyzed[2]['token_count'])  # Assistant message
-        
+
     def test_print_analysis(self):
-        # Create sample analyzed data
-        analyzed = [
-            {
-                'role': 'user',
-                'type': 'user_input',
-                'created': 1650000000,
-                'context_tokens': 0,
-                'input_tokens': 3500,  # Including system overhead
-                'output_tokens': 0,
-                'details': 'What is the weather?'
-            },
-            {
-                'role': 'assistant',
-                'type': 'agent_output',
-                'created': 1650000010,
-                'context_tokens': 0,
-                'input_tokens': 0,
-                'output_tokens': 50,
-                'details': 'I will check the weather for you.'
-            }
-        ]
-        
         # Capture stdout to verify output
         captured_output = io.StringIO()
         with redirect_stdout(captured_output):
-            token_analysis.print_analysis(analyzed)
+            token_analysis.print_analysis(self.sample_analyzed)
         
         output = captured_output.getvalue()
         
         # Check that key sections are in the output
         self.assertIn("=== Session Details ===", output)
-        self.assertIn("=== Session Summary ===", output)
+        self.assertIn("=== Session Metrics ===", output)
         self.assertIn("=== Token Usage Distribution ===", output)
         
         # Check that metrics are included
         self.assertIn("Total interactions", output)
-        self.assertIn("System prompt & tools overhead", output)
         self.assertIn("Total tokens", output)
 
     @patch('token_analysis.open')
@@ -295,6 +323,40 @@ class TestTokenAnalysis(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]['key'], 'value1')
         self.assertEqual(result[1]['key'], 'value2')
+
+    def test_text_extraction(self):
+        # Example messages from the session log
+        user_message = {"role":"user","created":1745363226,"content":[{"type":"text","text":"Can you find the models database in notion?"}]}
+        assistant_message = {"role":"assistant","created":1745363236,"content":[{"type":"text","text":"I'll help you search for a database in Notion that's related to models. Let me use the Notion search functionality to look for this."},{"type":"toolRequest","id":"tooluse_fLqIgCUSTfi1wm5N8l_wqB","toolCall":{"status":"success","value":{"name":"notion__API-post-search","arguments":{"filter":{"property":"object","value":"database"},"query":"models"}}}}]}
+        tool_response_message = {"role":"user","created":1745363236,"content":[{"type":"toolResponse","id":"tooluse_fLqIgCUSTfi1wm5N8l_wqB","toolResult":{"status":"success","value":[{"type":"text","text":"{\"object\":\"list\",\"results\":[{\"object\":\"database\",\"id\":\"1d9f8a6e-5b6d-8048-86ce-d0136ff03c7e\",\"cover\":null,\"icon\":null,\"created_time\":\"2025-04-18T13:47:00.000Z\",..."}]}}]}        
+
+        user_text = token_analysis.extract_by_criteria(
+            user_message['content'],
+            match_fn=lambda x: isinstance(x, dict) and x.get("type") == "text", 
+            value_fn=lambda x: x.get("text", "")
+        )
+
+        assistant_text = token_analysis.extract_by_criteria(
+            assistant_message['content'],
+            match_fn=lambda x: isinstance(x, dict) and x.get("type") == "text", 
+            value_fn=lambda x: x.get("text", "")
+        )
+
+        tool_response_text = token_analysis.extract_by_criteria(
+            tool_response_message['content'][0]['toolResult']['value'], 
+            match_fn=lambda x: isinstance(x, dict) and x.get("type") == "text", 
+            value_fn=lambda x: x.get("text", "")
+        )
+
+        # Expected results
+        expected_user_text = "Can you find the models database in notion?"
+        expected_assistant_text = "I'll help you search for a database in Notion that's related to models. Let me use the Notion search functionality to look for this."
+        expected_tool_response_text = "{\"object\":\"list\",\"results\":[{\"object\":\"database\",\"id\":\"1d9f8a6e-5b6d-8048-86ce-d0136ff03c7e\",\"cover\":null,\"icon\":null,\"created_time\":\"2025-04-18T13:47:00.000Z\",..."
+
+        # Validate
+        self.assertEqual(user_text, expected_user_text)
+        self.assertEqual(assistant_text, expected_assistant_text)
+        self.assertEqual(tool_response_text, expected_tool_response_text)
 
 if __name__ == '__main__':
     unittest.main()

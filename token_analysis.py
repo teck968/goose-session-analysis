@@ -25,7 +25,7 @@ def read_jsonl_file(filepath):
                 session_logs.append(json.loads(line))
     return session_logs
 
-def extract_by_criteria(obj, match_fn, value_fn, join_str=" "):
+def extract_by_criteria(obj, match_fn, value_fn, join_str="\n"):
     """Extract values from nested data structures based on matching criteria"""
     results = []
 
@@ -208,18 +208,19 @@ def analyze_logs(session_logs, tokenizer_name):
         'details': f"System prompt and tools schema ({SYSTEM_PROMPT_OVERHEAD + tools_schema_tokens} tokens)"
     })
 
-    # PHASE 1: Process each actual message
+    # Process each actual message
     for msg in messages:
         content = msg['content']
         role = msg.get('role', '')
         created = msg.get('created', 0)
 
-        # Extract text and tool data
+        # Extract text data (used later for token counting)
         all_text = extract_by_criteria(
             content,
-            match_fn=lambda x: isinstance(x, str) or (isinstance(x, dict) and x.get("type") == "text"),
+            # match_fn=lambda x: isinstance(x, str) or (isinstance(x, dict) and x.get("type") == "text"),
+            match_fn=lambda x: (isinstance(x, dict) and x.get("type") == "text"),
             value_fn=lambda x: x if isinstance(x, str) else x.get("text", "")
-        )
+        ) # TODO[ID:validate_text_extraction]: Validate that the results match Goose's implementation
 
         tool_requests = extract_tool_data(content, "toolRequest")  # TODO[ID:validate_extract_toolRequest_data]: Validate that the results match Goose's implementation
         tool_responses = extract_tool_data(content, "toolResponse")  # TODO[ID:validate_extract_toolResponse_data]: Validate that the results match Goose's implementation
@@ -266,7 +267,7 @@ def analyze_logs(session_logs, tokenizer_name):
             message_overhead += ASSISTANT_REPLY_TOKENS
 
         # Count tokens for content
-        text_tokens = tokenizer(msg['text']) if msg['text'] else 0
+        text_tokens = tokenizer(msg['text']) if msg['text'] else 0  # TODO[ID:validate_text_tokens]: Validate that the results match Goose's implementation
         tool_request_tokens = count_tool_tokens(tokenizer, msg['tool_requests'], is_request=True)  # TODO[ID:validate_tool_request_tokens]: Validate that the results match Goose's implementation
         tool_response_tokens = count_tool_tokens(tokenizer, msg['tool_responses'], is_request=False)  # TODO[ID:validate_tool_response_tokens]: Validate that the results match Goose's implementation
 
@@ -315,44 +316,27 @@ def print_analysis(token_logs, col_width=100):
 
     # Print session details table
     print("\n=== Session Details ===")
-
     print(df[['datetime', 'created', 'type', 'context_tokens', 'input_tokens', 'output_tokens', 'flag', 'details']].to_string(index=False, max_colwidth=col_width))
     
-    # Calculate system overhead
-    system_overhead = 0
-    if not df.empty:
-        first_user = df[df['role'] == 'user'].iloc[0] if not df[df['role'] == 'user'].empty else None
-        if first_user is not None:
-            # Extract system overhead by subtracting message content tokens
-            user_msg_tokens = first_user['total_io_tokens'] - first_user['input_tokens']
-            system_overhead = first_user['input_tokens'] - user_msg_tokens
-            system_overhead = max(0, system_overhead)
-    
-    # Calculate total tokens
-    total_tokens = system_overhead + df['input_tokens'].sum() + df['output_tokens'].sum()
-    
     # Create metrics table
-    metrics = [
-        ("Total interactions", len(df)),
-        ("System prompt & tools overhead", f"{system_overhead:,}"),
+    session_metrics = [
+        ("Total interactions", len(df[df['type'] != "system_prompt"])),     # Note: May include interactions 
         ("Total context tokens", f"{df['context_tokens'].sum():,}"),
-        ("Total user input tokens", f"{df[df['type'] == 'user_input']['input_tokens'].sum() - system_overhead:,}"),
+        ("Total user input tokens", f"{df[df['type'] == 'user_input']['input_tokens'].sum():,}"),
         ("Total tool input tokens", f"{df[df['type'] == 'tool_call']['input_tokens'].sum():,}"),
         ("Total agent output tokens", f"{df['output_tokens'].sum():,}"),
-        ("Total tokens (including overhead)", f"{total_tokens:,}"),
-        ("Average tokens per interaction", f"{df['total_io_tokens'].mean():.1f}")
+        ("Total tokens", f"{df['input_tokens'].sum() + df['output_tokens'].sum() + df['context_tokens'].sum():,}"),
     ]
+    
+    # Print session metrics
+    print("\n=== Session Metrics ===")
+    print(pd.DataFrame(session_metrics, columns=["Metric", "Value"]).to_string(index=False))
 
-    print("\n=== Session Summary ===")
-    print(pd.DataFrame(metrics, columns=["Metric", "Value"]).to_string(index=False))
-
-    # Print top token users
+    # Print top token interactions
     print("\n=== Token Usage Distribution ===")
     print("Top 10 most token-intensive interactions:")
     top_columns = ['datetime', 'created', 'type', 'total_io_tokens', 'flag']
     print(df.nlargest(10, 'total_io_tokens')[top_columns].to_string(index=False))
-
-
 
 def main():
     """Main entry point for the token analysis tool"""

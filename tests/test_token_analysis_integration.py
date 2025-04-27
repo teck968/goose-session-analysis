@@ -86,7 +86,7 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
 
             # Check that key sections are printed
             mock_print.assert_any_call("\n=== Session Details ===")
-            mock_print.assert_any_call("\n=== Session Summary ===")
+            mock_print.assert_any_call("\n=== Session Metrics ===")
             mock_print.assert_any_call("\n=== Token Usage Distribution ===")
 
 if __name__ == '__main__':
