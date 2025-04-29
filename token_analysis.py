@@ -25,26 +25,6 @@ def read_jsonl_file(filepath):
                 session_logs.append(json.loads(line))
     return session_logs
 
-def extract_by_criteria(obj, match_fn, value_fn, join_str="\n"):
-    """Extract values from nested data structures based on matching criteria"""
-    results = []
-
-    def walk(o):
-        if isinstance(o, list):
-            for item in o:
-                walk(item)
-        elif isinstance(o, dict):
-            if match_fn(o):
-                results.append(value_fn(o))
-            else:
-                for v in o.values():
-                    walk(v)
-        elif match_fn(o):
-            results.append(value_fn(o))
-
-    walk(obj)
-    return join_str.join(str(r) for r in results if r is not None)
-
 def count_tool_tokens(tokenizer, tool_data, is_request=True):
     """Count tokens for tool requests or responses based on Goose's logic"""
     tokens = 0
@@ -166,9 +146,6 @@ def format_tool_call_details(tool_requests, tool_responses):
                     arg_str += f", +{len(arg_items)-2} more"
                 else:
                     arg_str = ", ".join(f"{k}:{repr(v)[:50]}" for k, v in arg_items)
-
-                # Replace long strings with truncated versions
-                arg_str = arg_str.replace("'", "")
             else:
                 arg_str = str(args)
 
@@ -191,7 +168,7 @@ def analyze_logs(session_logs, tokenizer_name):
 
     # Extract tools and calculate schema tokens
     tools = summary.get('tools', [])
-    tools_schema_tokens = count_tools_for_schema(tokenizer, tools)  # TODO[ID:validate_toolschema_present]: Validate that this function works as expected on goose session logs. I suspect it doesn't because the data is not present in the logs.
+    tools_schema_tokens = count_tools_for_schema(tokenizer, tools)  # TODO[ID:toolschema_not_present]: Is there a way to emulate this in the logs?
 
     # PHASE 1: Extract text and metadata from all messages
     processed_messages = []
@@ -210,31 +187,73 @@ def analyze_logs(session_logs, tokenizer_name):
 
     # Process each actual message
     for msg in messages:
-        content = msg['content']
         role = msg.get('role', '')
         created = msg.get('created', 0)
+        content = msg['content']
 
-        # Extract text data (used later for token counting)
-        all_text = extract_by_criteria(
-            content,
-            # match_fn=lambda x: isinstance(x, str) or (isinstance(x, dict) and x.get("type") == "text"),
-            match_fn=lambda x: (isinstance(x, dict) and x.get("type") == "text"),
-            value_fn=lambda x: x if isinstance(x, str) else x.get("text", "")
-        ) # TODO[ID:validate_text_extraction]: Validate that the results match Goose's implementation
+            # def extract_tool_data(content, tool_type):
+            #     """Extract tool requests or responses from message content"""
+            #     tool_data = []
 
-        tool_requests = extract_tool_data(content, "toolRequest")  # TODO[ID:validate_extract_toolRequest_data]: Validate that the results match Goose's implementation
-        tool_responses = extract_tool_data(content, "toolResponse")  # TODO[ID:validate_extract_toolResponse_data]: Validate that the results match Goose's implementation
+            #     if not isinstance(content, list):
+            #         return tool_data
+
+            #     for item in content:
+            #         if isinstance(item, dict) and item.get("type") == tool_type:
+            #             if tool_type == "toolRequest":
+            #                 tool_call = item.get("toolCall", {})
+            #                 value = tool_call.get("value", {})
+            #                 tool_data.append({
+            #                     "id": item.get("id", ""),
+            #                     "name": value.get("name", ""),
+            #                     "arguments": value.get("arguments", {})
+            #                 })
+            #             elif tool_type == "toolResponse":
+            #                 tool_data.append({
+            #                     "id": item.get("id", ""),
+            #                     "content": item.get("toolResult", {}).get("value", []) 
+            #                 })
+
+            #     return tool_data
+
+                # all_text = content[0].get("text", "") 
+        # tool_requests = extract_tool_data(content, "toolRequest")  # TODO[ID:validate_extract_toolRequest_data]: Validate 
+        # tool_responses = extract_tool_data(content, "toolResponse")  # TODO[ID:validate_extract_toolResponse_data]: Validate 
+
+        all_text = []
+        tool_requests = []
+        tool_responses = []
+
+        # Extract text and tool data from content
+        # Note: content is expected to be a list of dictionaries
+        # Note: goose session logs combine text and tool data in the content field
+
+        for item in content:
+            if isinstance(item, dict) and item.get("type", "") == "text":
+                all_text.append(item.get("text", ""))
+            if isinstance(item, dict) and item.get("type", "") == "toolRequest":
+                tool_requests.append({
+                    "id": item.get("id", ""),
+                    "name": item.get("toolCall", {}).get("value", {}).get("name", ""),
+                    "arguments": item.get("toolCall", {}).get("value", {}).get("arguments", {})
+                })
+            if isinstance(item, dict) and item.get("type", "") == "toolResponse":
+                tool_responses.append({
+                    "id": item.get("id", ""),
+                    "content": item.get("toolResult", {}).get("value", [])
+                })
 
         # Determine message type
-        msg_type = "unknown"
         if role == 'user':
             msg_type = "tool_call" if tool_responses else "user_input"
         elif role == 'assistant':
             msg_type = "agent_output"
+        else:
+            msg_type = "unknown"
 
         # Create display details
         if msg_type in ("user_input", "agent_output"):
-            details = all_text
+            details = "\n".join(all_text)
         elif msg_type == "tool_call":
             # Find the previous assistant message to get the tool requests
             prev_assistant = next((m for m in reversed(processed_messages)
@@ -267,12 +286,12 @@ def analyze_logs(session_logs, tokenizer_name):
             message_overhead += ASSISTANT_REPLY_TOKENS
 
         # Count tokens for content
-        text_tokens = tokenizer(msg['text']) if msg['text'] else 0  # TODO[ID:validate_text_tokens]: Validate that the results match Goose's implementation
-        tool_request_tokens = count_tool_tokens(tokenizer, msg['tool_requests'], is_request=True)  # TODO[ID:validate_tool_request_tokens]: Validate that the results match Goose's implementation
-        tool_response_tokens = count_tool_tokens(tokenizer, msg['tool_responses'], is_request=False)  # TODO[ID:validate_tool_response_tokens]: Validate that the results match Goose's implementation
+        text_tokens = tokenizer("\n".join(msg['text'])) if msg['text'] else 0  
+        tool_request_tokens = count_tool_tokens(tokenizer, msg['tool_requests'], is_request=True)  
+        tool_response_tokens = count_tool_tokens(tokenizer, msg['tool_responses'], is_request=False)  
 
         # Total tokens for this message
-        msg['token_count'] = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead  # TODO[ID:validate_total_tokens]: Validate that the results match Goose's implementation
+        msg['token_count'] = text_tokens + tool_request_tokens + tool_response_tokens + message_overhead  
 
     # PHASE 3: Calculate context sizes for each message
     for i, msg in enumerate(processed_messages):
