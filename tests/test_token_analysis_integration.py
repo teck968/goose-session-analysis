@@ -5,23 +5,22 @@ from unittest.mock import patch, MagicMock
 import io
 from contextlib import redirect_stdout
 
-
 # Add parent directory to path so we can import token_analysis
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import the main function from token_analysis.py
-# from token_analysis import main, analyze_logs
+# Import from token_analysis.py
 import token_analysis
+from token_analysis import MessageProcessor, TokenAnalyzer, AnalysisFormatter
 
 class TestTokenAnalysisIntegration(unittest.TestCase):
     def setUp(self):
         # Path to the test data file
         self.test_file = os.path.join('tests', 'test_data', 'sample_session.jsonl')
-        
+
         # Ensure the test file exists
         if not os.path.exists(self.test_file):
             self.skipTest(f"Test file {self.test_file} not found")
-    
+
     @patch('tiktoken.get_encoding')
     def test_analyze_logs_with_real_file(self, mock_get_encoding):
         # Setup mock tokenizer
@@ -30,10 +29,14 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
         mock_get_encoding.return_value = mock_enc
 
         # Read the test file
-        session_logs = token_analysis.read_jsonl_file(self.test_file)
+        processor = MessageProcessor()
+        session_logs = processor.read_jsonl_file(self.test_file)
+
+        # Create analyzer with mocked tokenizer
+        analyzer = TokenAnalyzer("tiktoken")
 
         # Analyze logs
-        analyzed = token_analysis.analyze_logs(session_logs, "tiktoken")
+        analyzed = analyzer.analyze_logs(session_logs)
 
         # Basic validation
         self.assertGreater(len(analyzed), 0)
@@ -59,8 +62,8 @@ class TestTokenAnalysisIntegration(unittest.TestCase):
         assistant_msgs = [msg for msg in analyzed if msg['role'] == 'assistant']
         if assistant_msgs:
             self.assertGreater(assistant_msgs[0]['output_tokens'], 0)
-    
-    
+
+
     @patch('argparse.ArgumentParser.parse_args')
     @patch('tiktoken.get_encoding')
     def test_main_function(self, mock_get_encoding, mock_parse_args):
