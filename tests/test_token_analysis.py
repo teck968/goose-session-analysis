@@ -503,30 +503,31 @@ class TestTokenAnalysis(unittest.TestCase):
         # Second user message should have all previous messages as context
         self.assertEqual(result[3]["context_tokens"], 100 + 50 + 75)
 
-def test_outlier_detection_with_iqr(self):
-    """Test outlier detection using the IQR method"""
-    import pandas as pd
+    def test_outlier_detection_with_dual_criteria(self):
+        """Test outlier detection using both IQR and minimum threshold"""
+        import pandas as pd
 
-    # Create a dataset with clear outliers
-    data = [
-        {"created": 1650000000, "input_tokens": 50, "output_tokens": 0},
-        {"created": 1650000010, "input_tokens": 0, "output_tokens": 75},
-        {"created": 1650000020, "input_tokens": 60, "output_tokens": 0},
-        {"created": 1650000030, "input_tokens": 0, "output_tokens": 80},
-        {"created": 1650000040, "input_tokens": 55, "output_tokens": 0},
-        {"created": 1650000050, "input_tokens": 0, "output_tokens": 70},
-        {"created": 1650000060, "input_tokens": 500, "output_tokens": 0}  # Outlier
-    ]
+        # Create a dataset with values where only one exceeds both criteria
+        data = [
+            {"created": 1650000000, "input_tokens": 50, "output_tokens": 0},
+            {"created": 1650000010, "input_tokens": 0, "output_tokens": 75},
+            {"created": 1650000020, "input_tokens": 60, "output_tokens": 0},
+            {"created": 1650000030, "input_tokens": 0, "output_tokens": 80},
+            {"created": 1650000040, "input_tokens": 55, "output_tokens": 0},
+            {"created": 1650000050, "input_tokens": 0, "output_tokens": 70},
+            {"created": 1650000060, "input_tokens": 500, "output_tokens": 0},  # Above IQR but below min threshold
+            {"created": 1650000070, "input_tokens": 5000, "output_tokens": 0}  # Above both thresholds
+        ]
 
-    formatter = AnalysisFormatter()
-    df = formatter.prepare_dataframe(data)
+        formatter = AnalysisFormatter()
+        df = formatter.prepare_dataframe(data)
 
-    # Verify that the outlier is flagged
-    self.assertEqual(df.iloc[6]["flag"], "<--OUTLIER(I+O)")
+        # Verify that only the extreme outlier is flagged
+        self.assertEqual(df.iloc[7]["flag"], "<--OUTLIER(I+O)")
 
-    # Verify that non-outliers are not flagged
-    for i in range(6):
-        self.assertEqual(df.iloc[i]["flag"], "")
+        # Verify that all others (including the moderate outlier) are not flagged
+        for i in range(7):
+            self.assertEqual(df.iloc[i]["flag"], "")
 
     def test_outlier_detection_with_small_dataset(self):
         """Test outlier detection with a dataset too small for IQR"""
@@ -536,7 +537,7 @@ def test_outlier_detection_with_iqr(self):
         data = [
             {"created": 1650000000, "input_tokens": 50, "output_tokens": 0},
             {"created": 1650000010, "input_tokens": 0, "output_tokens": 75},
-            {"created": 1650000020, "input_tokens": 1000, "output_tokens": 0}  # Would be an outlier in larger dataset
+            {"created": 1650000020, "input_tokens": 5000, "output_tokens": 0}  # Would be an outlier in larger dataset
         ]
 
         formatter = AnalysisFormatter()
@@ -545,25 +546,6 @@ def test_outlier_detection_with_iqr(self):
         # Verify that no flags are set for small datasets
         for i in range(len(df)):
             self.assertEqual(df.iloc[i]["flag"], "")
-
-    def test_outlier_detection_with_small_dataset(self):
-        """Test outlier detection with a dataset too small for IQR"""
-        import pandas as pd
-
-        # Create a small dataset (less than 4 points)
-        data = [
-            {"input_tokens": 50, "output_tokens": 0},
-            {"input_tokens": 0, "output_tokens": 75},
-            {"input_tokens": 1000, "output_tokens": 0}  # Would be an outlier in larger dataset
-        ]
-
-        formatter = AnalysisFormatter()
-        df = formatter.prepare_dataframe(data)
-
-        # Verify that no flags are set for small datasets
-        for i in range(len(df)):
-            self.assertEqual(df.iloc[i]["flag"], "")
-
 
     def test_format_session_details_with_different_col_widths(self):
         """Test formatting session details with different column widths"""

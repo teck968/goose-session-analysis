@@ -318,14 +318,16 @@ class AnalysisFormatter:
         df['datetime'] = pd.to_datetime(df['created'], unit='s', errors='coerce')
         df['total_io_tokens'] = df['input_tokens'] + df['output_tokens']
 
-        # Mark outliers using IQR method (more robust to extreme values)
+        # Mark outliers using IQR method with reduced sensitivity
         if len(df) >= 4:  # Need at least 4 points for quartiles to be meaningful
             Q1 = df['total_io_tokens'].quantile(0.25)
             Q3 = df['total_io_tokens'].quantile(0.75)
             IQR = Q3 - Q1
-            upper_bound = Q3 + 1.5 * IQR
+            upper_bound = Q3 + 5.0 * IQR  
+            min_threshold = 3000  # Only flag values above 3,000 tokens (system prompt size)
+
             df['flag'] = df['total_io_tokens'].apply(
-                lambda x: "<--OUTLIER(I+O)" if x > upper_bound else ""
+                lambda x: "<--OUTLIER(I+O)" if x > upper_bound and x > min_threshold else ""
             )
         else:
             # For very small datasets, don't try to identify outliers
